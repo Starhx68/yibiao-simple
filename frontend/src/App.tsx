@@ -11,6 +11,7 @@ import FinancialInfoManagement from './pages/resource/FinancialInfoManagement';
 import PerformanceManagement from './pages/resource/PerformanceManagement';
 import UserManagement from './pages/UserManagement';
 import BidEditor from './pages/BidEditor';
+import BusinessBidEditor from './pages/business/BusinessBidEditor';
 import InterfaceManagement from './pages/InterfaceManagement';
 
 function App() {
@@ -22,7 +23,7 @@ function App() {
           isAuthenticated() ? <MainLayout /> : <Navigate to="/login" replace />
         }>
           <Route index element={<HomePage />} />
-          <Route path="business" element={<BidEditor type="business" />} />
+          <Route path="business" element={<BusinessBidEditor />} />
           <Route path="technical" element={<BidEditor type="technical" />} />
           <Route path="resource/company" element={<CompanyInfoPage />} />
           <Route path="resource/qualifications" element={<QualificationManagement />} />

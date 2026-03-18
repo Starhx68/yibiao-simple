@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 import os
 from .config import settings
 from .routers import config, document, outline, content, search, expand
-from .routers import auth, resource
+from .routers import auth, resource, business_bid
 from . import database
 from .models.models import User
 from .services.auth_service import get_password_hash
@@ -26,6 +26,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 挂载上传目录，用于文件预览
+if not os.path.exists(settings.upload_dir):
+    os.makedirs(settings.upload_dir)
+app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")
+
 app.include_router(config.router)
 app.include_router(document.router)
 app.include_router(outline.router)
@@ -34,6 +39,7 @@ app.include_router(search.router)
 app.include_router(expand.router)
 app.include_router(auth.router)
 app.include_router(resource.router)
+app.include_router(business_bid.router)
 
 @app.on_event("startup")
 async def startup_event():

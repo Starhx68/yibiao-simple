@@ -18,8 +18,12 @@ const LoginPage: React.FC = () => {
     try {
       await authApi.login({ username, password });
       navigate('/');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '登录失败');
+    } catch (err: any) {
+      if (err.message && err.message.includes('401')) {
+         setError('用户名或密码错误');
+      } else {
+         setError(err instanceof Error ? err.message : '登录失败');
+      }
     } finally {
       setLoading(false);
     }

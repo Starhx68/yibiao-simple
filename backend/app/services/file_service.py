@@ -49,6 +49,10 @@ class FileService:
         object_name = f"{settings.minio_object_prefix}/{datetime.utcnow().strftime('%Y%m%d')}/{int(time.time() * 1000)}_{safe_filename}"
         guessed_content_type = mimetypes.guess_type(safe_filename)[0] or "image/jpeg"
         expires_seconds = max(60, int(settings.minio_presigned_expire_seconds))
+        max_retries = max(1, int(getattr(settings, "minio_upload_max_retries", 3) or 3))
+        timeout_seconds = float(getattr(settings, "minio_upload_timeout_seconds", 20) or 20)
+        if timeout_seconds <= 0:
+            timeout_seconds = 20
 
         def _upload_to_minio() -> str:
             client = Minio(
@@ -57,7 +61,11 @@ class FileService:
                 secret_key=secret_key,
                 secure=bool(settings.minio_secure),
             )
-            if not client.bucket_exists(settings.minio_bucket):
+            try:
+                bucket_exists = client.bucket_exists(settings.minio_bucket)
+            except Exception as e:
+                raise Exception(f"MinIO连接健康检查失败: {str(e)}")
+            if not bucket_exists:
                 client.make_bucket(settings.minio_bucket)
             stream = io.BytesIO(image_data)
             client.put_object(
@@ -76,10 +84,17 @@ class FileService:
                 expires=timedelta(seconds=expires_seconds),
             )
 
-        try:
-            return await asyncio.to_thread(_upload_to_minio)
-        except Exception as e:
-            raise Exception(f"MinIO图片上传失败: {str(e)}")
+        last_error: Optional[Exception] = None
+        for attempt in range(max_retries):
+            try:
+                return await asyncio.wait_for(asyncio.to_thread(_upload_to_minio), timeout=timeout_seconds)
+            except asyncio.TimeoutError:
+                last_error = Exception(f"第{attempt + 1}次上传超时({timeout_seconds}s)")
+            except Exception as e:
+                last_error = e
+            if attempt < max_retries - 1:
+                await asyncio.sleep(min(2 ** attempt, 5))
+        raise Exception(f"MinIO图片上传失败，已重试{max_retries}次: {str(last_error)}")
 
     @staticmethod
     def extract_images_from_pdf(file_path: str) -> List[Tuple[bytes, str, int, int]]:
@@ -530,8 +545,60 @@ class FileService:
             raise Exception(f"Word文档读取失败: {str(e)}")
     
     @staticmethod
-    async def process_uploaded_file(file: UploadFile) -> str:
-        """处理上传的文件并提取文本内容"""
+    async def _convert_doc_to_docx(file_path: str) -> str:
+        """将.doc文件转换为.docx文件以便处理和预览"""
+        import os
+        import asyncio
+        
+        docx_path = file_path + "x"
+        
+        def _convert():
+            try:
+                import win32com.client
+                import pythoncom
+                pythoncom.CoInitialize()
+                
+                word = None
+                try:
+                    word = win32com.client.DispatchEx("Word.Application")
+                    word.Visible = False
+                    word.DisplayAlerts = False
+                    
+                    abs_file_path = os.path.abspath(file_path)
+                    abs_docx_path = os.path.abspath(docx_path)
+                    
+                    doc = word.Documents.Open(abs_file_path)
+                    doc.SaveAs2(abs_docx_path, FileFormat=16)
+                    doc.Close()
+                finally:
+                    if word:
+                        try:
+                            word.Quit()
+                        except:
+                            pass
+                
+                pythoncom.CoUninitialize()
+            except Exception as e:
+                # 尝试使用 spire.doc 作为备选
+                try:
+                    from spire.doc import Document, FileFormat
+                    doc = Document()
+                    doc.LoadFromFile(file_path)
+                    doc.SaveToFile(docx_path, FileFormat.Docx)
+                    doc.Close()
+                except Exception as inner_e:
+                    raise Exception(f"Win32com: {str(e)} | Spire: {str(inner_e)}")
+                    
+        await asyncio.to_thread(_convert)
+        
+        if not os.path.exists(docx_path):
+            raise Exception("文档转换失败，未生成.docx文件")
+            
+        return docx_path
+
+    @staticmethod
+    async def process_uploaded_file(file: UploadFile) -> tuple[str, str]:
+        """处理上传的文件并提取文本内容，返回 (文本内容, 文件保存路径)"""
         content_type = (file.content_type or "").lower()
         filename = (file.filename or "").lower()
         is_pdf = content_type == "application/pdf" or filename.endswith(".pdf")
@@ -539,8 +606,12 @@ class FileService:
             content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             or filename.endswith(".docx")
         )
-        if not is_pdf and not is_docx:
-            raise Exception("不支持的文件类型，请上传PDF或Word文档")
+        is_doc = (
+            content_type == "application/msword"
+            or filename.endswith(".doc")
+        )
+        if not is_pdf and not is_docx and not is_doc:
+            raise Exception("不支持的文件类型，请上传PDF或Word文档(.doc, .docx)")
         # 检查文件大小
         content = await file.read()
         if len(content) > settings.max_file_size:
@@ -558,13 +629,17 @@ class FileService:
                 text = await FileService.extract_text_from_pdf(file_path)
             elif is_docx:
                 text = await FileService.extract_text_from_docx(file_path)
+            elif is_doc:
+                docx_path = await FileService._convert_doc_to_docx(file_path)
+                text = await FileService.extract_text_from_docx(docx_path)
+                file_path = docx_path  # 更新为docx路径以便前端预览
             else:
-                raise Exception("不支持的文件类型，请上传PDF或Word文档")
+                raise Exception("不支持的文件类型，请上传PDF或Word文档(.doc, .docx)")
 
-            # 成功提取后，使用安全的文件清理方法
-            FileService._safe_file_cleanup(file_path)
+            # 注意：不再删除文件，因为前端需要预览
+            # FileService._safe_file_cleanup(file_path)
 
-            return text
+            return text, file_path
 
         except Exception as e:
             # 异常情况下也使用安全的文件清理方法

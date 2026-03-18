@@ -195,3 +195,45 @@ class Performance(Base):
     remark = Column(Text)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+class BusinessBidProject(Base):
+    __tablename__ = "business_bid_projects"
+    
+    id = Column(String(36), primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    project_name = Column(String(200), nullable=False)
+    status = Column(String(20), default="draft") # draft, analyzing, generating, completed
+    tender_document_url = Column(String(500))
+    tender_document_name = Column(String(200))
+    tender_content = Column(Text(16777215)) # 存储解析后的文本
+    elements_content = Column(Text(16777215)) # 存储解析后的商务要素JSON
+    directories_content = Column(Text(16777215)) # 存储生成的目录JSON
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+class BusinessBidElement(Base):
+    __tablename__ = "business_bid_elements"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    project_id = Column(String(36), ForeignKey("business_bid_projects.id", ondelete="CASCADE"), nullable=False)
+    category = Column(String(50))
+    key_name = Column(String(100))
+    extracted_value = Column(Text)
+    source_text = Column(Text)
+    page_number = Column(Integer)
+    bounding_box = Column(String(100)) # "x1,y1,x2,y2"
+    created_at = Column(DateTime, server_default=func.now())
+
+class BusinessBidDirectory(Base):
+    __tablename__ = "business_bid_directories"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    project_id = Column(String(36), ForeignKey("business_bid_projects.id", ondelete="CASCADE"), nullable=False)
+    parent_id = Column(Integer, ForeignKey("business_bid_directories.id", ondelete="CASCADE"), nullable=True)
+    title = Column(String(200))
+    level = Column(Integer)
+    sort_order = Column(Integer)
+    content_type = Column(String(50)) # text, richtext, form, image, auto
+    content = Column(Text(16777215))
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     minio_public_base_url: Optional[str] = None
     minio_presigned_expire_seconds: int = 604800
     minio_object_prefix: str = "document-images"
+    minio_upload_max_retries: int = 3
+    minio_upload_timeout_seconds: float = 20
     
     if SettingsConfigDict:
         model_config = SettingsConfigDict(env_file=".env", extra="allow")

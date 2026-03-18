@@ -83,6 +83,10 @@ def _ensure_schema():
             ("evaluation_url", "VARCHAR(500)"),
             ("invoice_url", "VARCHAR(500)"),
         ],
+        "business_bid_projects": [
+            ("elements_content", "TEXT"),
+            ("directories_content", "TEXT"),
+        ],
     }
 
     with engine.begin() as conn:

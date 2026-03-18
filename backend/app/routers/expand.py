@@ -23,14 +23,15 @@ async def upload_file(
             content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             or filename.endswith(".docx")
         )
-        if not is_pdf and not is_docx:
+        is_doc = content_type == "application/msword" or filename.endswith(".doc")
+        if not is_pdf and not is_docx and not is_doc:
             return FileUploadResponse(
                 success=False,
-                message="不支持的文件类型，请上传PDF或Word文档"
+                message="不支持的文件类型，请上传PDF或Word文档(.doc, .docx)"
             )
         
         # 处理文件并提取文本
-        file_content = await FileService.process_uploaded_file(file)
+        file_content, _ = await FileService.process_uploaded_file(file)
         
         # 提取目录
         openai_service = OpenAIService()
