@@ -2,16 +2,11 @@
  * 应用状态管理Hook
  */
 import { useState, useCallback } from 'react';
-import { AppState, ConfigData, OutlineData } from '../types';
+import { AppState, OutlineData } from '../types';
 import { draftStorage } from '../utils/draftStorage';
 
 const initialState: AppState = {
   currentStep: 0,
-  config: {
-    api_key: '',
-    base_url: '',
-    model_name: 'gpt-3.5-turbo',
-  },
   fileContent: '',
   projectOverview: '',
   techRequirements: '',
@@ -27,10 +22,6 @@ export const useAppState = () => {
       ...(draft || {}),
     };
   });
-
-  const updateConfig = useCallback((config: ConfigData) => {
-    setState(prev => ({ ...prev, config }));
-  }, []);
 
   const updateStep = useCallback((step: number) => {
     setState(prev => {
@@ -99,7 +90,6 @@ export const useAppState = () => {
 
   return {
     state,
-    updateConfig,
     updateStep,
     updateFileContent,
     updateAnalysisResults,

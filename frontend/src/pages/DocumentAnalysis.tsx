@@ -114,7 +114,12 @@ const DocumentAnalysis: React.FC<DocumentAnalysisProps> = ({
         setMessage({ type: 'error', text: response.data.message });
       }
     } catch (error: any) {
-      setMessage({ type: 'error', text: error.response?.data?.detail || '文件上传失败' });
+      const errorMessage =
+        error.response?.data?.detail ||
+        error.response?.data?.message ||
+        error.message ||
+        '文件上传失败';
+      setMessage({ type: 'error', text: errorMessage });
     } finally {
       setUploading(false);
     }
@@ -136,6 +141,23 @@ const DocumentAnalysis: React.FC<DocumentAnalysisProps> = ({
       let requirementsResult = '';
 
       const decoder = new TextDecoder();
+
+      const ensureOk = async (response: Response) => {
+        if (response.ok) return;
+        let msg = '';
+        try {
+          const data: any = await response.json();
+          msg = data?.detail || data?.message || '';
+          if (!msg) msg = JSON.stringify(data);
+        } catch (e) {
+          try {
+            msg = await response.text();
+          } catch {
+            msg = '';
+          }
+        }
+        throw new Error(msg || `解析失败（HTTP ${response.status}）`);
+      };
 
       // 处理流式响应的通用函数
       const processStream = async (response: Response, onChunk: (chunk: string) => void) => {
@@ -176,6 +198,7 @@ const DocumentAnalysis: React.FC<DocumentAnalysisProps> = ({
         file_content: fileContent,
         analysis_type: 'overview',
       });
+      await ensureOk(overviewResponse);
 
       await processStream(overviewResponse, (chunk) => {
         overviewResult += chunk;
@@ -192,6 +215,7 @@ const DocumentAnalysis: React.FC<DocumentAnalysisProps> = ({
         file_content: fileContent,
         analysis_type: 'requirements',
       });
+      await ensureOk(requirementsResponse);
 
       await processStream(requirementsResponse, (chunk) => {
         requirementsResult += chunk;
@@ -212,7 +236,8 @@ const DocumentAnalysis: React.FC<DocumentAnalysisProps> = ({
       setCurrentAnalysisStep(null);
 
     } catch (error: any) {
-      setMessage({ type: 'error', text: error.message || '标书解析失败' });
+      const errorMessage = error?.message || '标书解析失败';
+      setMessage({ type: 'error', text: errorMessage });
       setStreamingOverview('');
       setStreamingRequirements('');
       setCurrentAnalysisStep(null);

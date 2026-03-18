@@ -1,6 +1,8 @@
 """目录相关API路由"""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from ..models.schemas import OutlineRequest, OutlineResponse
+from ..models.models import User
+from ..services.auth_service import get_current_user
 from ..services.openai_service import OpenAIService
 from ..utils.config_manager import config_manager
 from ..utils import prompt_manager
@@ -12,7 +14,10 @@ router = APIRouter(prefix="/api/outline", tags=["目录管理"])
 
 
 @router.post("/generate")
-async def generate_outline(request: OutlineRequest):
+async def generate_outline(
+    request: OutlineRequest,
+    current_user: User = Depends(get_current_user),
+):
     """生成标书目录结构（以SSE流式返回）"""
     try:
         # 加载配置
@@ -73,7 +78,10 @@ async def generate_outline(request: OutlineRequest):
 
 
 @router.post("/generate-stream")
-async def generate_outline_stream(request: OutlineRequest):
+async def generate_outline_stream(
+    request: OutlineRequest,
+    current_user: User = Depends(get_current_user),
+):
     """流式生成标书目录结构"""
     try:
         # 加载配置

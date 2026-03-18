@@ -360,7 +360,7 @@ def build_exe():
 
 def main():
     """主函数"""
-    print("AI写标书助手 - 构建脚本")
+    print("海新屹AI标书 - 构建脚本")
     print("="*50)
     
     # 确保在项目根目录
@@ -390,7 +390,7 @@ def main():
     
     print("\n" + "="*50)
     print("构建完成！")
-    print("exe文件位于: dist/AI写标书助手.exe")
+    print("exe文件位于: dist/海新屹AI标书.exe")
     print("="*50)
     
     return True

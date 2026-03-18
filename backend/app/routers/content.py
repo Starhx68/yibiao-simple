@@ -1,6 +1,8 @@
 """内容相关API路由"""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from ..models.schemas import ContentGenerationRequest, ChapterContentRequest
+from ..models.models import User
+from ..services.auth_service import get_current_user
 from ..services.openai_service import OpenAIService
 from ..utils.config_manager import config_manager
 from ..utils.sse import sse_response
@@ -10,7 +12,10 @@ router = APIRouter(prefix="/api/content", tags=["内容管理"])
 
 
 @router.post("/generate-chapter")
-async def generate_chapter_content(request: ChapterContentRequest):
+async def generate_chapter_content(
+    request: ChapterContentRequest,
+    current_user: User = Depends(get_current_user),
+):
     """为单个章节生成内容"""
     try:
         # 加载配置
@@ -39,7 +44,10 @@ async def generate_chapter_content(request: ChapterContentRequest):
 
 
 @router.post("/generate-chapter-stream")
-async def generate_chapter_content_stream(request: ChapterContentRequest):
+async def generate_chapter_content_stream(
+    request: ChapterContentRequest,
+    current_user: User = Depends(get_current_user),
+):
     """流式为单个章节生成内容"""
     try:
         # 加载配置

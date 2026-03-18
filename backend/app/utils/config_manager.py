@@ -1,49 +1,45 @@
 """配置管理工具"""
-import json
 import os
 from typing import Dict, Optional
+from dotenv import load_dotenv, set_key
 
 
 class ConfigManager:
     """用户配置管理器"""
     
     def __init__(self):
-        # 配置文件路径 - 存储到用户家目录中
-        self.config_dir = os.path.join(os.path.expanduser("~"), ".ai_write_helper")
-        self.config_file = os.path.join(self.config_dir, "user_config.json")
-        
-        # 确保配置目录存在
-        os.makedirs(self.config_dir, exist_ok=True)
+        backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        self.env_path = os.path.join(backend_dir, ".env")
+        self.api_key_name = "OPENAI_API_KEY"
+        self.base_url_name = "OPENAI_BASE_URL"
+        self.model_name_key = "OPENAI_MODEL"
+        self.ocr_model_key = "OPENAI_OCR_MODEL"
+        load_dotenv(self.env_path, override=True)
     
     def load_config(self) -> Dict:
-        """从本地JSON文件加载配置"""
-        default_config = {
-            'api_key': '',
-            'base_url': '',
-            'model_name': 'gpt-3.5-turbo'
+        """从.env文件加载配置"""
+        load_dotenv(self.env_path, override=True)
+        return {
+            "api_key": os.getenv(self.api_key_name, ""),
+            "base_url": os.getenv(self.base_url_name, ""),
+            "model_name": os.getenv(self.model_name_key, "gpt-3.5-turbo"),
+            "ocr_model": os.getenv(self.ocr_model_key, "")
         }
-        
-        if os.path.exists(self.config_file):
-            try:
-                with open(self.config_file, 'r', encoding='utf-8') as f:
-                    loaded_config = json.load(f)
-                    default_config.update(loaded_config)
-            except Exception:
-                pass  # 如果读取失败，使用默认配置
-        
-        return default_config
     
-    def save_config(self, api_key: str, base_url: str, model_name: str) -> bool:
-        """保存配置到本地JSON文件"""
-        config = {
-            'api_key': api_key,
-            'base_url': base_url,
-            'model_name': model_name
-        }
-        
+    def save_config(self, api_key: str, base_url: Optional[str], model_name: Optional[str], ocr_model: Optional[str]) -> bool:
+        """保存配置到.env文件"""
         try:
-            with open(self.config_file, 'w', encoding='utf-8') as f:
-                json.dump(config, f, ensure_ascii=False, indent=2)
+            if not os.path.exists(self.env_path):
+                with open(self.env_path, "w", encoding="utf-8") as f:
+                    f.write("")
+            current_config = self.load_config()
+            model_value = model_name or current_config.get("model_name", "gpt-3.5-turbo")
+            base_url_value = base_url if base_url is not None else current_config.get("base_url", "")
+            ocr_model_value = ocr_model or current_config.get("ocr_model", "")
+            set_key(self.env_path, self.api_key_name, api_key)
+            set_key(self.env_path, self.base_url_name, base_url_value)
+            set_key(self.env_path, self.model_name_key, model_value)
+            set_key(self.env_path, self.ocr_model_key, ocr_model_value)
             return True
         except Exception:
             return False

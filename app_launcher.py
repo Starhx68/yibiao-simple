@@ -79,7 +79,7 @@ def main():
     global uvicorn_server, server_thread, server_should_stop
     
     print("="*50)
-    print("AI写标书助手 - 启动中...")
+    print("海新屹AI标书 - 启动中...")
     print("="*50)
     
     # 注册信号处理器

@@ -7,7 +7,6 @@ import { OutlineData, OutlineItem } from '../types';
 import { DocumentTextIcon, PlayIcon, DocumentArrowDownIcon, CheckCircleIcon, ExclamationCircleIcon, ArrowUpIcon } from '@heroicons/react/24/outline';
 import { contentApi, ChapterContentRequest, documentApi } from '../services/api';
 import { saveAs } from 'file-saver';
-import { Paragraph, TextRun } from 'docx';
 import { draftStorage } from '../utils/draftStorage';
 
 interface ContentEditProps {

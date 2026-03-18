@@ -19,6 +19,7 @@ class OpenAIService:
         self.api_key = config.get('api_key', '')
         self.base_url = config.get('base_url', '')
         self.model_name = config.get('model_name', 'gpt-3.5-turbo')
+        self.ocr_model = config.get('ocr_model', '')
 
         # 初始化OpenAI客户端 - 使用异步客户端
         self.client = openai.AsyncOpenAI(

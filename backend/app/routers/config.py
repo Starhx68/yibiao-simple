@@ -1,20 +1,26 @@
 """配置相关API路由"""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from ..models.schemas import ConfigRequest, ConfigResponse, ModelListResponse
+from ..models.models import User
 from ..services.openai_service import OpenAIService
+from ..services.auth_service import require_admin
 from ..utils.config_manager import config_manager
 
 router = APIRouter(prefix="/api/config", tags=["配置管理"])
 
 
 @router.post("/save", response_model=ConfigResponse)
-async def save_config(config: ConfigRequest):
+async def save_config(
+    config: ConfigRequest,
+    current_user: User = Depends(require_admin),
+):
     """保存OpenAI配置"""
     try:
         success = config_manager.save_config(
             api_key=config.api_key,
-            base_url=config.base_url or "",
-            model_name=config.model_name
+            base_url=config.base_url,
+            model_name=config.model_name,
+            ocr_model=config.ocr_model
         )
         
         if success:
@@ -27,7 +33,9 @@ async def save_config(config: ConfigRequest):
 
 
 @router.get("/load", response_model=dict)
-async def load_config():
+async def load_config(
+    current_user: User = Depends(require_admin),
+):
     """加载保存的配置"""
     try:
         config = config_manager.load_config()
@@ -37,7 +45,10 @@ async def load_config():
 
 
 @router.post("/models", response_model=ModelListResponse)
-async def get_available_models(config: ConfigRequest):
+async def get_available_models(
+    config: ConfigRequest,
+    current_user: User = Depends(require_admin),
+):
     """获取可用的模型列表"""
     try:
         if not config.api_key:
@@ -48,10 +59,12 @@ async def get_available_models(config: ConfigRequest):
             )
 
         # 临时保存配置以供OpenAI服务使用
+        existing_config = config_manager.load_config()
         temp_saved = config_manager.save_config(
             api_key=config.api_key,
             base_url=config.base_url,
-            model_name=config.model_name
+            model_name=config.model_name or existing_config.get("model_name"),
+            ocr_model=config.ocr_model or existing_config.get("ocr_model")
         )
 
         if not temp_saved:

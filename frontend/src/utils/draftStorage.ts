@@ -43,9 +43,9 @@ export const draftStorage = {
   },
 
   clearAll() {
-    // 按用户要求：上传新招标文件时清空之前的 localStorage
     try {
-      localStorage.clear();
+      localStorage.removeItem(DRAFT_KEY);
+      localStorage.removeItem(CONTENT_BY_ID_KEY);
     } catch (e) {
       console.warn('清空 localStorage 失败:', e);
     }

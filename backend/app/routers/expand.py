@@ -1,23 +1,29 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from ..models.schemas import FileUploadResponse
+from ..models.models import User
 from ..services.file_service import FileService
 from ..utils import prompt_manager
 from ..services.openai_service import OpenAIService
+from ..services.auth_service import get_current_user
 
 router = APIRouter(prefix="/api/expand", tags=["标书扩写"])
 
 
 @router.post("/upload", response_model=FileUploadResponse)
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
     """上传文档文件并提取文本内容"""
     try:
-        # 检查文件类型
-        allowed_types = [
-            "application/pdf",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        ]
-        
-        if file.content_type not in allowed_types:
+        content_type = (file.content_type or "").lower()
+        filename = (file.filename or "").lower()
+        is_pdf = content_type == "application/pdf" or filename.endswith(".pdf")
+        is_docx = (
+            content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            or filename.endswith(".docx")
+        )
+        if not is_pdf and not is_docx:
             return FileUploadResponse(
                 success=False,
                 message="不支持的文件类型，请上传PDF或Word文档"

@@ -4,78 +4,96 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
-import fastapi.middleware.cors
-import starlette.middleware.cors
-
 from .config import settings
 from .routers import config, document, outline, content, search, expand
+from .routers import auth, resource
+from . import database
+from .models.models import User
+from .services.auth_service import get_password_hash
 
-# 创建FastAPI应用实例
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="基于FastAPI的AI写标书助手后端API"
+    description="基于FastAPI的海新屹AI标书后端API"
 )
 
-# 添加CORS中间件
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
+    allow_origin_regex=settings.cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 注册路由
 app.include_router(config.router)
 app.include_router(document.router)
 app.include_router(outline.router)
 app.include_router(content.router)
 app.include_router(search.router)
 app.include_router(expand.router)
+app.include_router(auth.router)
+app.include_router(resource.router)
 
-# 健康检查端点
+@app.on_event("startup")
+async def startup_event():
+    database.init_db()
+    db = database.SessionLocal()
+    try:
+        admin = db.query(User).filter(User.username == "admin").first()
+        if not admin:
+            admin_user = User(
+                username="admin",
+                password_hash=get_password_hash("admin$123"),
+                role="admin",
+                real_name="系统管理员",
+                is_active=True
+            )
+            db.add(admin_user)
+            db.commit()
+            print("管理员用户创建成功！用户名: admin, 密码: admin$123")
+        else:
+            should_commit = False
+            if admin.role != "admin":
+                admin.role = "admin"
+                should_commit = True
+            if not admin.is_active:
+                admin.is_active = True
+                should_commit = True
+            if should_commit:
+                db.commit()
+    finally:
+        db.close()
+
 @app.get("/health")
 async def health_check():
-    """健康检查"""
     return {
         "status": "healthy",
         "app_name": settings.app_name,
         "version": settings.app_version
     }
 
-# 静态文件服务（用于服务前端构建文件）
 if os.path.exists("static"):
-    # 挂载静态资源文件夹
     app.mount("/static", StaticFiles(directory="static/static"), name="static")
     
-    # 处理React应用的路由（SPA路由支持）
     @app.get("/")
     async def read_index():
-        """根路径，返回前端首页"""
         return FileResponse("static/index.html")
     
     @app.get("/{full_path:path}")
     async def serve_react_app(full_path: str):
-        """处理React路由，所有非API路径都返回index.html"""
-        # 排除API路径
-        if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("health"):
-            # 这些路径应该由FastAPI处理，如果到这里说明404
+        if full_path.startswith("api/") or full_path.startswith("docs") or full_path == "health":
             from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="API endpoint not found")
         
-        # 检查是否是静态文件
         static_file_path = os.path.join("static", full_path)
         if os.path.exists(static_file_path) and os.path.isfile(static_file_path):
             return FileResponse(static_file_path)
         
-        # 对于其他所有路径，返回React应用的index.html（SPA路由）
         return FileResponse("static/index.html")
 else:
-    # 如果没有静态文件，返回API信息
     @app.get("/")
     async def read_root():
-        """根路径，返回API信息"""
         return {
             "message": f"欢迎使用 {settings.app_name} API",
             "version": settings.app_version,

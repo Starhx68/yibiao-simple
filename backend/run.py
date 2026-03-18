@@ -6,12 +6,15 @@ import multiprocessing
 if __name__ == "__main__":
     # 确保在正确的目录中运行
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
-    
+    host = os.getenv("HOST", "127.0.0.1")
+    port = int(os.getenv("PORT", "8000"))
+    workers = int(os.getenv("WORKERS", "1"))
+
     uvicorn.run(
         "app.main:app",
-        host="127.0.0.1",
-        port=8000,
-        reload=False,  # 多进程模式下不支持reload
+        host=host,
+        port=port,
+        reload=False,
         log_level="info",
-        workers=multiprocessing.cpu_count() * 2  # CPU核心数的2倍，最大化并发能力
+        workers=workers
     )

@@ -9,9 +9,16 @@ from typing import Optional, List, Dict, Tuple
 import PyPDF2
 import docx
 from fastapi import UploadFile
-import aiohttp
 import asyncio
+import mimetypes
+from datetime import timedelta
+from urllib.parse import quote
 from ..config import settings
+try:
+    from minio import Minio
+    HAS_MINIO_LIB = True
+except ImportError:
+    HAS_MINIO_LIB = False
 
 # 新增的第三方库
 try:
@@ -28,34 +35,51 @@ except ImportError as e:
 class FileService:
     """文件处理服务"""
 
-    # 图片上传配置
-    IMAGE_UPLOAD_URL = "https://mt.agnet.top/image/upload"
-    IMAGE_UPLOAD_TIMEOUT = 30  # 超时时间（秒）
-
     @staticmethod
-    async def upload_image_to_server(image_data: bytes, filename: str) -> Optional[str]:
+    async def upload_image_to_server(image_data: bytes, filename: str) -> str:
         """上传图片到外部服务器"""
-        try:
-            # 准备multipart/form-data格式的数据
-            form_data = aiohttp.FormData()
-            form_data.add_field('file',
-                              io.BytesIO(image_data),
-                              filename=filename,
-                              content_type='image/jpeg')
+        if not HAS_MINIO_LIB:
+            raise Exception("请先配置 MinIO")
+        endpoint = (settings.minio_endpoint or "").strip()
+        access_key = (settings.minio_access_key or "").strip()
+        secret_key = (settings.minio_secret_key or "").strip()
+        if not endpoint or not access_key or not secret_key:
+            raise Exception("请先配置 MinIO")
+        safe_filename = os.path.basename(filename or "image.jpg")
+        object_name = f"{settings.minio_object_prefix}/{datetime.utcnow().strftime('%Y%m%d')}/{int(time.time() * 1000)}_{safe_filename}"
+        guessed_content_type = mimetypes.guess_type(safe_filename)[0] or "image/jpeg"
+        expires_seconds = max(60, int(settings.minio_presigned_expire_seconds))
 
-            timeout = aiohttp.ClientTimeout(total=FileService.IMAGE_UPLOAD_TIMEOUT)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(FileService.IMAGE_UPLOAD_URL, data=form_data) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        # 根据实际API返回格式获取图片URL
-                        return result.get('file_url')
-                    else:
-                        print(f"图片上传失败，状态码: {response.status}")
-                        return None
+        def _upload_to_minio() -> str:
+            client = Minio(
+                endpoint,
+                access_key=access_key,
+                secret_key=secret_key,
+                secure=bool(settings.minio_secure),
+            )
+            if not client.bucket_exists(settings.minio_bucket):
+                client.make_bucket(settings.minio_bucket)
+            stream = io.BytesIO(image_data)
+            client.put_object(
+                settings.minio_bucket,
+                object_name,
+                stream,
+                length=len(image_data),
+                content_type=guessed_content_type,
+            )
+            if settings.minio_public_base_url:
+                base = settings.minio_public_base_url.rstrip("/")
+                return f"{base}/{settings.minio_bucket}/{quote(object_name, safe='/')}"
+            return client.presigned_get_object(
+                settings.minio_bucket,
+                object_name,
+                expires=timedelta(seconds=expires_seconds),
+            )
+
+        try:
+            return await asyncio.to_thread(_upload_to_minio)
         except Exception as e:
-            print(f"图片上传异常: {str(e)}")
-            return None
+            raise Exception(f"MinIO图片上传失败: {str(e)}")
 
     @staticmethod
     def extract_images_from_pdf(file_path: str) -> List[Tuple[bytes, str, int, int]]:
@@ -508,6 +532,15 @@ class FileService:
     @staticmethod
     async def process_uploaded_file(file: UploadFile) -> str:
         """处理上传的文件并提取文本内容"""
+        content_type = (file.content_type or "").lower()
+        filename = (file.filename or "").lower()
+        is_pdf = content_type == "application/pdf" or filename.endswith(".pdf")
+        is_docx = (
+            content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            or filename.endswith(".docx")
+        )
+        if not is_pdf and not is_docx:
+            raise Exception("不支持的文件类型，请上传PDF或Word文档")
         # 检查文件大小
         content = await file.read()
         if len(content) > settings.max_file_size:
@@ -521,9 +554,9 @@ class FileService:
         
         try:
             # 根据文件类型提取文本和图片
-            if file.content_type == "application/pdf":
+            if is_pdf:
                 text = await FileService.extract_text_from_pdf(file_path)
-            elif file.content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            elif is_docx:
                 text = await FileService.extract_text_from_docx(file_path)
             else:
                 raise Exception("不支持的文件类型，请上传PDF或Word文档")

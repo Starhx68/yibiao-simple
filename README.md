@@ -117,6 +117,50 @@ cd yibiao-simple
 
 ```
 
+### MinIO 本地图片存储配置
+
+后端会将文档中提取出的图片上传到 MinIO，并在解析结果中生成图片引用链接。
+
+1. 启动 MinIO（Docker）
+
+```bash
+docker run -d --name yibiao-minio ^
+  -p 9000:9000 -p 9001:9001 ^
+  -e MINIO_ROOT_USER=minioadmin ^
+  -e MINIO_ROOT_PASSWORD=minioadmin ^
+  -v D:\minio\data:/data ^
+  quay.io/minio/minio server /data --console-address ":9001"
+```
+
+2. 首次创建桶（任意方式二选一）
+- 在浏览器打开 `http://127.0.0.1:9001`，登录后创建桶 `yibiao-images`
+- 或使用 `mc` 命令行：
+
+```bash
+mc alias set local http://127.0.0.1:9000 minioadmin minioadmin
+mc mb local/yibiao-images
+```
+
+3. 在 `backend/.env` 中增加 MinIO 配置
+
+```env
+MINIO_ENDPOINT=127.0.0.1:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+MINIO_BUCKET=yibiao-images
+MINIO_SECURE=false
+MINIO_PUBLIC_BASE_URL=http://127.0.0.1:9000
+MINIO_PRESIGNED_EXPIRE_SECONDS=604800
+MINIO_OBJECT_PREFIX=document-images
+```
+
+4. 安装后端依赖并重启后端服务
+
+```bash
+cd backend
+pip install -r requirements.txt
+```
+
 ### 生产环境打包
 
 ```bash
