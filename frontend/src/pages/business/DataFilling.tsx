@@ -2,17 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import '@wangeditor/editor/dist/css/style.css';
 import { Editor, Toolbar } from '@wangeditor/editor-for-react';
 import { IDomEditor, IEditorConfig, IToolbarConfig } from '@wangeditor/editor';
-import TurndownService from 'turndown';
 import { marked } from 'marked';
-
-// Initialize turndown service
-const turndownService = new TurndownService({
-  headingStyle: 'atx',
-  bulletListMarker: '-',
-});
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const turndownPluginGfm = require('turndown-plugin-gfm');
-turndownService.use(turndownPluginGfm.tables);
 
 // WangEditor 5 strictly filters HTML tags. It does not support <div> by default.
 // We must unwrap <div> tags (like the template-region from backend) so inner <p> and <table> are kept.
@@ -55,6 +45,7 @@ interface OutlineNode {
   title: string;
   children: OutlineNode[];
   content?: string;
+  description?: string;
 }
 
 interface ResourceItem {
@@ -126,14 +117,12 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
   const [isLoadingResource, setIsLoadingResource] = useState(false);
   const [isSmartFilling, setIsSmartFilling] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
   // WangEditor instance
   const [editor, setEditor] = useState<IDomEditor | null>(null);
 
-  // Refs for auto-save on blur
   const nodeDataMapRef = useRef(nodeDataMap);
-  const outlineRef = useRef(outline);
-  const projectIdRef = useRef(projectId);
   const selectedNodeRef = useRef(selectedNode);
 
   useEffect(() => {
@@ -141,74 +130,16 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
   }, [nodeDataMap]);
 
   useEffect(() => {
-    outlineRef.current = outline;
-  }, [outline]);
-
-  useEffect(() => {
-    projectIdRef.current = projectId;
-  }, [projectId]);
-
-  useEffect(() => {
     selectedNodeRef.current = selectedNode;
   }, [selectedNode]);
 
-  const autoSave = async () => {
-    const currentProjectId = projectIdRef.current;
-    if (!currentProjectId) return;
-
-    const currentOutline = outlineRef.current;
-    const currentDataMap = { ...nodeDataMapRef.current };
-    
-    // Grab absolute latest text from editor to avoid React state batching race conditions
-    if (editor && selectedNodeRef.current) {
-      currentDataMap[selectedNodeRef.current.id] = {
-        ...currentDataMap[selectedNodeRef.current.id],
-        text: editor.getHtml()
-      };
-    }
-
-    const newOutline = JSON.parse(JSON.stringify(currentOutline));
+  const buildNormalizedOutline = (baseOutline: OutlineNode[], dataMap: Record<string, NodeData>) => {
+    const newOutline = JSON.parse(JSON.stringify(baseOutline));
     const updateNodeContent = (nodes: OutlineNode[]) => {
       for (const node of nodes) {
-        if (currentDataMap[node.id] && currentDataMap[node.id].text !== undefined) {
-          let htmlToConvert = currentDataMap[node.id].text;
-          
-          // Pre-process tables for turndown to ensure proper Markdown conversion
-          try {
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(htmlToConvert, 'text/html');
-            const tables = Array.from(doc.querySelectorAll('table'));
-            tables.forEach(table => {
-              if (!table.querySelector('th')) {
-                const firstRow = table.querySelector('tr');
-                if (firstRow) {
-                  const tds = Array.from(firstRow.querySelectorAll('td'));
-                  tds.forEach(td => {
-                    const th = doc.createElement('th');
-                    th.innerHTML = td.innerHTML;
-                    Array.from(td.attributes).forEach(attr => th.setAttribute(attr.name, attr.value));
-                    td.parentNode?.replaceChild(th, td);
-                  });
-                  let thead = table.querySelector('thead');
-                  if (!thead) {
-                    thead = doc.createElement('thead');
-                    table.insertBefore(thead, table.firstChild);
-                    thead.appendChild(firstRow);
-                  }
-                }
-              }
-            });
-            htmlToConvert = doc.body.innerHTML;
-          } catch (e) {
-            // ignore
-          }
-          
-          try {
-            node.content = turndownService.turndown(htmlToConvert);
-          } catch (e) {
-            console.error('Turndown conversion failed', e);
-            node.content = htmlToConvert;
-          }
+        if (dataMap[node.id] && dataMap[node.id].text !== undefined) {
+          const currentHtml = dataMap[node.id].text || '';
+          node.content = sanitizeHtmlForEditor(currentHtml);
         }
         if (node.children) {
           updateNodeContent(node.children);
@@ -216,13 +147,25 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
       }
     };
     updateNodeContent(newOutline);
-    const normalizedOutline = ensureDirectoryNumbering(newOutline);
-    setOutline(normalizedOutline); // <-- Add this to update local state too
+    return ensureDirectoryNumbering(newOutline);
+  };
+
+  const handleSave = async () => {
+    if (!projectId) return;
+    const currentDataMap = { ...nodeDataMapRef.current };
+    if (editor && selectedNodeRef.current) {
+      currentDataMap[selectedNodeRef.current.id] = {
+        ...currentDataMap[selectedNodeRef.current.id],
+        text: editor.getHtml()
+      };
+    }
+    const normalizedOutline = buildNormalizedOutline(outline, currentDataMap);
+    setOutline(normalizedOutline);
 
     try {
       setSaveStatus('saving');
       const token = localStorage.getItem('hxybs_token');
-      await fetch(`/api/business-bids/${currentProjectId}`, {
+      await fetch(`/api/business-bids/${projectId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -230,14 +173,13 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
         },
         body: JSON.stringify({
           directories_content: JSON.stringify(normalizedOutline)
-          // Intentionally omitting 'status: filled' to not alter workflow state unexpectedly during autosave
         })
       });
       setSaveStatus('saved');
+      setHasUnsavedChanges(false);
       setTimeout(() => setSaveStatus('idle'), 2000);
-      console.log('[DataFilling] Auto-saved successfully on blur');
     } catch (e) {
-      console.error('[DataFilling] Failed to auto-save directories content', e);
+      console.error('[DataFilling] Failed to save directories content', e);
       setSaveStatus('idle');
     }
   };
@@ -258,10 +200,6 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
       uploadImage: {
         base64LimitSize: 5 * 1024 * 1024 // 5MB
       }
-    },
-    onBlur: (editor: IDomEditor) => {
-      console.log('[DataFilling] Editor blurred, triggering auto-save');
-      autoSave();
     }
   };
 
@@ -280,6 +218,7 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
         text: html
       }
     }));
+    setHasUnsavedChanges(true);
   };
 
   useEffect(() => {
@@ -415,6 +354,7 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
       ...prev,
       [nodeId]: { ...existing, selectedResources: newSelected, text: newText }
     }));
+    setHasUnsavedChanges(true);
   };
 
   const handleRemoveResource = (res: ResourceItem) => {
@@ -435,6 +375,7 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
       ...prev,
       [nodeId]: { ...existing, selectedResources: newSelected, text: newText }
     }));
+    setHasUnsavedChanges(true);
   };
 
   const handleSmartFill = async () => {
@@ -442,6 +383,7 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
     const nodeId = selectedNode.id;
     const currentData = nodeDataMap[nodeId];
     if (!currentData || !currentData.text) return;
+    const latestHtml = editor ? editor.getHtml() : currentData.text;
 
     setIsSmartFilling(true);
     try {
@@ -453,8 +395,10 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          html_content: currentData.text,
-          resources: currentData.selectedResources
+          html_content: latestHtml,
+          resources: currentData.selectedResources,
+          node_title: selectedNode.title,
+          node_description: selectedNode.description || ''
         })
       });
 
@@ -468,6 +412,7 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
             ...prev,
             [nodeId]: { ...currentData, text: data.filled_content }
           }));
+          setHasUnsavedChanges(true);
         }
       } else {
         console.error('Smart fill failed');
@@ -585,84 +530,10 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
   };
 
   const handleNext = async () => {
-    // 将 nodeDataMap 中的内容保存到 outline 中
-    const newOutline = JSON.parse(JSON.stringify(outline));
-    const currentDataMap = { ...nodeDataMap };
-    
-    // Grab absolute latest text from editor to avoid React state batching race conditions
-    if (editor && selectedNode) {
-      currentDataMap[selectedNode.id] = {
-        ...currentDataMap[selectedNode.id],
-        text: editor.getHtml()
-      };
+    if (hasUnsavedChanges) {
+      alert('当前内容有未保存修改，请先点击“保存”按钮。');
+      return;
     }
-
-    const updateNodeContent = (nodes: OutlineNode[]) => {
-      for (const node of nodes) {
-        if (currentDataMap[node.id] && currentDataMap[node.id].text !== undefined) {
-          let htmlToConvert = currentDataMap[node.id].text;
-          
-          try {
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(htmlToConvert, 'text/html');
-            const tables = Array.from(doc.querySelectorAll('table'));
-            tables.forEach(table => {
-              if (!table.querySelector('th')) {
-                const firstRow = table.querySelector('tr');
-                if (firstRow) {
-                  const tds = Array.from(firstRow.querySelectorAll('td'));
-                  tds.forEach(td => {
-                    const th = doc.createElement('th');
-                    th.innerHTML = td.innerHTML;
-                    Array.from(td.attributes).forEach(attr => th.setAttribute(attr.name, attr.value));
-                    td.parentNode?.replaceChild(th, td);
-                  });
-                  let thead = table.querySelector('thead');
-                  if (!thead) {
-                    thead = doc.createElement('thead');
-                    table.insertBefore(thead, table.firstChild);
-                    thead.appendChild(firstRow);
-                  }
-                }
-              }
-            });
-            htmlToConvert = doc.body.innerHTML;
-          } catch (e) {
-            // ignore
-          }
-          
-          try {
-            node.content = turndownService.turndown(htmlToConvert);
-          } catch (e) {
-            console.error('Turndown conversion failed', e);
-            node.content = htmlToConvert;
-          }
-        }
-        if (node.children) {
-          updateNodeContent(node.children);
-        }
-      }
-    };
-    updateNodeContent(newOutline);
-    const normalizedOutline = ensureDirectoryNumbering(newOutline);
-
-    try {
-      const token = localStorage.getItem('hxybs_token');
-      await fetch(`/api/business-bids/${projectId}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          directories_content: JSON.stringify(normalizedOutline),
-          status: 'filled'
-        })
-      });
-    } catch (e) {
-      console.error('Failed to save directories content', e);
-    }
-    
     onNext();
   };
 
@@ -750,16 +621,25 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
                   <div className="flex items-center gap-3">
                     <label className="text-sm font-medium text-gray-700 border-l-4 border-green-500 pl-2">目录内容（支持富文本编辑，可原样保持格式）</label>
                     {saveStatus === 'saving' && <span className="text-xs text-gray-400">保存中...</span>}
-                    {saveStatus === 'saved' && <span className="text-xs text-green-500">已自动保存</span>}
+                    {saveStatus === 'saved' && <span className="text-xs text-green-500">已保存</span>}
                   </div>
-                  <button
-                    onClick={handleSmartFill}
-                    disabled={isSmartFilling}
-                    className={`px-3 py-1.5 text-sm text-white rounded-md flex items-center gap-1 ${isSmartFilling ? 'bg-indigo-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 shadow-sm'}`}
-                  >
-                    {isSmartFilling && <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></div>}
-                    AI智能格式填充
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleSave}
+                      disabled={saveStatus === 'saving'}
+                      className={`px-3 py-1.5 text-sm text-white rounded-md ${saveStatus === 'saving' ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 shadow-sm'}`}
+                    >
+                      保存
+                    </button>
+                    <button
+                      onClick={handleSmartFill}
+                      disabled={isSmartFilling}
+                      className={`px-3 py-1.5 text-sm text-white rounded-md flex items-center gap-1 ${isSmartFilling ? 'bg-indigo-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 shadow-sm'}`}
+                    >
+                      {isSmartFilling && <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></div>}
+                      AI智能格式填充
+                    </button>
+                  </div>
                 </div>
                 <div style={{ border: '1px solid #ccc', zIndex: 100 }} className="flex-1 flex flex-col">
                   <Toolbar

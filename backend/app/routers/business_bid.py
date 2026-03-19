@@ -18,6 +18,7 @@ import json
 import logging
 import re
 import time
+from html import escape
 import docx
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -1012,6 +1013,111 @@ def get_directory_source_content(project_id: str, node_title: str, current_user:
 class SmartFillRequest(BaseModel):
     html_content: str
     resources: list[dict]
+    node_title: str | None = None
+    node_description: str | None = None
+    tender_requirement: str | None = None
+
+def _strip_html_text(html_content: str) -> str:
+    if not html_content:
+        return ""
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html_content, "html.parser")
+        text = soup.get_text("\n")
+        return re.sub(r"\n{3,}", "\n\n", text).strip()
+    except Exception:
+        return re.sub(r"<[^>]+>", " ", html_content or "").strip()
+
+def _normalize_title_for_match(text: str) -> str:
+    t = (text or "").strip()
+    t = re.sub(r"^\s*第[一二三四五六七八九十百千零〇两\d]+[章节部分篇卷][\s、.．:：-]*", "", t)
+    t = re.sub(r"^\s*[（(]?\d+[）)](?:\.\d+)*[、.．:：-]?\s*", "", t)
+    t = re.sub(r"^\s*\d+(?:\.\d+)*[、.．:：-]?\s*", "", t)
+    t = re.sub(r"^\s*[一二三四五六七八九十百千零〇两]+[、.．:：-]\s*", "", t)
+    t = re.sub(r"^\s*[（(][一二三四五六七八九十百千零〇两]+[）)][、.．:：-]?\s*", "", t)
+    return t.strip()
+
+def _plain_text_to_html(text: str) -> str:
+    lines = (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    html_parts: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            html_parts.append("<p><br/></p>")
+        else:
+            html_parts.append(f"<p>{escape(stripped)}</p>")
+    return "".join(html_parts) if html_parts else "<p><br/></p>"
+
+def _generated_text_to_html(text: str) -> str:
+    content = (text or "").strip()
+    if not content:
+        return "<p><br/></p>"
+    if re.search(r"<[a-zA-Z][^>]*>", content):
+        return content
+    lines = content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    html_parts: list[str] = []
+    i = 0
+    sep_pattern = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
+    while i < len(lines):
+        line = lines[i].strip()
+        if line and "|" in line and i + 1 < len(lines) and sep_pattern.match(lines[i + 1].strip()):
+            header_cells = [c.strip() for c in line.strip("|").split("|")]
+            body_rows: list[list[str]] = []
+            i += 2
+            while i < len(lines):
+                row_line = lines[i].strip()
+                if not row_line or "|" not in row_line:
+                    break
+                body_rows.append([c.strip() for c in row_line.strip("|").split("|")])
+                i += 1
+            table_html = "<table><thead><tr>" + "".join([f"<th>{escape(c)}</th>" for c in header_cells]) + "</tr></thead><tbody>"
+            for row in body_rows:
+                table_html += "<tr>" + "".join([f"<td>{escape(c)}</td>" for c in row]) + "</tr>"
+            table_html += "</tbody></table>"
+            html_parts.append(table_html)
+            continue
+        if not line:
+            html_parts.append("<p><br/></p>")
+        else:
+            html_parts.append(f"<p>{escape(line)}</p>")
+        i += 1
+    return "".join(html_parts) if html_parts else "<p><br/></p>"
+
+def _merge_generated_after_title(original_html: str, generated_html: str, node_title: str | None) -> str:
+    html_content = original_html or "<p><br/></p>"
+    if not generated_html.strip():
+        return html_content
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html_content, "html.parser")
+        generated_soup = BeautifulSoup(generated_html, "html.parser")
+        old_block = soup.find("div", attrs={"data-ai-custom-fill": "1"})
+        if old_block:
+            old_block.decompose()
+        wrapper = soup.new_tag("div")
+        wrapper["data-ai-custom-fill"] = "1"
+        for child in list(generated_soup.contents):
+            wrapper.append(child)
+        target_title = _normalize_title_for_match(node_title or "")
+        title_tags = ["h1", "h2", "h3", "h4", "h5", "h6", "p", "strong", "span", "div"]
+        title_node = None
+        if target_title:
+            for tag in soup.find_all(title_tags):
+                text = _normalize_title_for_match(tag.get_text(" ", strip=True))
+                if text and (text == target_title or target_title in text):
+                    title_node = tag
+                    break
+        if title_node is not None:
+            title_node.insert_after(wrapper)
+        elif soup.body:
+            soup.body.insert(0, wrapper)
+        else:
+            soup.append(wrapper)
+        if soup.body:
+            return soup.body.decode_contents()
+        return str(soup)
+    except Exception:
+        return f"{html_content}{generated_html}"
 
 @router.post("/{project_id}/smart-fill")
 async def smart_fill_template(project_id: str, request: SmartFillRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -1036,15 +1142,53 @@ async def smart_fill_template(project_id: str, request: SmartFillRequest, curren
         except Exception:
             pass
 
-    system_prompt = """你是一个智能的文档填充助手。你的任务是将提供的相关资料和项目关键信息，精准地填入给定的 HTML 模板中。
+    html_content = request.html_content or ""
+    plain_content = _strip_html_text(html_content)
+    is_custom_format = bool(re.search(r"格式\s*自拟", plain_content))
+    tender_requirement = (request.tender_requirement or "").strip()
+    if is_custom_format and not tender_requirement and request.node_title:
+        try:
+            source_info = get_directory_source_content(project_id, request.node_title, current_user, db)
+            if isinstance(source_info, dict):
+                tender_requirement = (source_info.get("content") or "").strip()
+        except Exception:
+            tender_requirement = ""
+
+    if is_custom_format:
+        system_prompt = """你是一个专业的技术标书编写专家。请基于章节信息和招标要求，生成可直接用于投标文件正文的内容。
+要求：
+1. 严格围绕章节标题、章节描述和招标文件要求生成，不写无关内容。
+2. 语言正式、专业、可执行，不空泛，不口语化。
+3. 不得编造未提供的事实数据；缺失信息可用“按招标文件要求执行”这类合规表述。
+4. 只输出章节正文内容，不要输出标题。
+5. 输出必须是HTML片段，段落用<p>，如需表格必须使用<table>/<tr>/<td>真实HTML标签，禁止输出Markdown表格语法（如 |---|）。"""
+        user_prompt = f"""
+【章节标题】：
+{request.node_title or ""}
+
+【章节描述】：
+{request.node_description or ""}
+
+【招标文件对本章节的要求】：
+{tender_requirement}
+
+【可用于写作的资料】：
+{resources_text}
+
+【当前模板内容】：
+{plain_content}
+
+请直接输出本章节正文：
+"""
+    else:
+        system_prompt = """你是一个智能的文档填充助手。你的任务是将提供的相关资料和项目关键信息，精准地填入给定的 HTML 模板中。
 核心要求：
 1. 保持原有 HTML 结构和格式绝对不变（特别是表格 <table>、加粗 <strong>、下划线 <u>、以及我预设的外层包裹 div 等）。
 2. 识别 HTML 中的下划线填空区（如 `____`）、括号（如 `（  ）`）、或者我设定的占位符（如 `{{PROJECT_NAME}}`）。
 3. 根据提供的资料内容，将相关信息填充到这些空白处，替换掉下划线或占位符。如果原本有下划线，填充后可以保留适量下划线或者直接填入文字，但不能破坏整体美观和结构。
 4. 如果提供的资料中没有可以对应填充的信息，则必须保留原有空白、下划线或占位符，绝对不要瞎编。
 5. 只返回处理后的完整 HTML 内容，不要包含 ```html 等任何 Markdown 标记。"""
-
-    user_prompt = f"""
+        user_prompt = f"""
 【项目关键信息与占位符映射】：
 {project_info}
 
@@ -1052,7 +1196,7 @@ async def smart_fill_template(project_id: str, request: SmartFillRequest, curren
 {resources_text}
 
 【待填充的 HTML 模板】：
-{request.html_content}
+{html_content}
 
 请输出填充后的 HTML 模板内容：
 """
@@ -1069,10 +1213,18 @@ async def smart_fill_template(project_id: str, request: SmartFillRequest, curren
             response_text += chunk
             
         cleaned_html = response_text.strip()
-        if cleaned_html.startswith("```html"):
-            cleaned_html = cleaned_html[7:]
-        if cleaned_html.endswith("```"):
-            cleaned_html = cleaned_html[:-3]
+        if is_custom_format:
+            generated_text = cleaned_html
+            if generated_text.startswith("```"):
+                generated_text = re.sub(r"^```[a-zA-Z]*\s*", "", generated_text)
+                generated_text = re.sub(r"\s*```$", "", generated_text)
+            generated_html = _generated_text_to_html(generated_text)
+            cleaned_html = _merge_generated_after_title(html_content, generated_html, request.node_title)
+        else:
+            if cleaned_html.startswith("```html"):
+                cleaned_html = cleaned_html[7:]
+            if cleaned_html.endswith("```"):
+                cleaned_html = cleaned_html[:-3]
             
         logger.info(f"Smart fill completed for project {project_id}")
         return {"success": True, "filled_content": cleaned_html.strip()}
