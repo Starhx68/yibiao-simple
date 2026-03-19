@@ -716,9 +716,10 @@ async def upload_file(
 async def smart_fill_from_image(
     scene: str,
     file: UploadFile = File(...),
+    target_field: Optional[str] = None,
     current_user: User = Depends(get_current_user),
 ):
-    allowed_scenes = {"company", "qualification", "personnel", "financial", "performance"}
+    allowed_scenes = {"company", "qualification", "personnel", "financial", "performance", "idcard"}
     if scene not in allowed_scenes:
         raise HTTPException(status_code=400, detail="不支持的识别场景")
 
@@ -777,6 +778,19 @@ async def smart_fill_from_image(
                 "bank_address",
             ],
             "hint": "营业执照/公司基本信息",
+        },
+        "idcard": {
+            "image_url_field": "image_url",
+            "fields": [
+                "name",
+                "gender",
+                "birth_date",
+                "id_number",
+                "valid_from",
+                "valid_to",
+                "long_term",
+            ],
+            "hint": "中华人民共和国居民身份证（正反面）",
         },
         "qualification": {
             "image_url_field": "cert_image_url",
@@ -843,6 +857,67 @@ async def smart_fill_from_image(
     scene_def = field_map[scene]
     output_fields = scene_def["fields"]
     url_field = scene_def["image_url_field"]
+    scene_hint = scene_def["hint"]
+
+    def is_valid_target_field(v: Optional[str]) -> bool:
+        if not v:
+            return False
+        v = v.strip()
+        if not v:
+            return False
+        if len(v) > 64:
+            return False
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", v):
+            return False
+        return True
+
+    allowed_target_fields = {
+        "company": {
+            "business_license_url",
+            "bank_license_url",
+            "related_image_url",
+            "logo_url",
+            "seal_url",
+            "legal_person_id_card_url",
+            "authorized_person_id_card_url",
+        },
+        "qualification": {"cert_image_url"},
+        "personnel": {
+            "photo_url",
+            "id_card_url",
+            "education_cert_url",
+            "contract_url",
+            "driver_license_url",
+            "social_security_url",
+            "cert_image_url",
+            "resume_url",
+        },
+        "financial": {"file_url"},
+        "performance": {"contract_url", "bid_notice_url", "acceptance_url", "evaluation_url", "invoice_url"},
+        "idcard": {"image_url"},
+    }
+
+    if is_valid_target_field(target_field) and target_field in allowed_target_fields.get(scene, set()):
+        url_field = target_field
+
+        hint_overrides = {
+            ("company", "bank_license_url"): "开户许可证/银行账户信息",
+            ("company", "business_license_url"): "营业执照/公司基本信息",
+            ("qualification", "cert_image_url"): "资质证书",
+            ("personnel", "education_cert_url"): "毕业证/学历证明",
+            ("personnel", "contract_url"): "劳动合同/聘用合同",
+            ("personnel", "driver_license_url"): "驾驶证",
+            ("personnel", "social_security_url"): "社保缴纳证明",
+            ("personnel", "photo_url"): "人员照片",
+            ("personnel", "cert_image_url"): "资格/职称证书",
+            ("personnel", "resume_url"): "简历",
+            ("performance", "contract_url"): "业绩合同",
+            ("performance", "bid_notice_url"): "中标通知书",
+            ("performance", "acceptance_url"): "验收证明",
+            ("performance", "evaluation_url"): "评价/业主证明",
+            ("performance", "invoice_url"): "发票",
+        }
+        scene_hint = hint_overrides.get((scene, target_field), scene_hint)
 
     openai_service = OpenAIService()
 
@@ -866,7 +941,7 @@ async def smart_fill_from_image(
                 )
                 if strict_mode:
                     infer_user_prompt = (
-                        f"识别场景：{scene_def['hint']}\n"
+                        f"识别场景：{scene_hint}\n"
                         f"必须输出字段：{', '.join(output_fields)}，以及字段 {url_field}\n"
                         f"{url_field} 的值固定为：{uploaded_url}\n"
                         f"OCR原始输出：\n{raw_text}\n"
@@ -874,7 +949,7 @@ async def smart_fill_from_image(
                     )
                 else:
                     infer_user_prompt = (
-                        f"识别场景：{scene_def['hint']}\n"
+                        f"识别场景：{scene_hint}\n"
                         f"允许输出字段：{', '.join(output_fields)}，以及字段 {url_field}\n"
                         f"{url_field} 的值固定为：{uploaded_url}\n"
                         f"OCR原始输出：\n{raw_text}\n"

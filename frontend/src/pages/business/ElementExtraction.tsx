@@ -34,7 +34,7 @@ const ElementExtraction: React.FC<Props> = ({ projectId, onNext }) => {
   const [tenderContent, setTenderContent] = useState<string>('');
   const [tenderDocUrl, setTenderDocUrl] = useState<string>(''); // 文档预览URL
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [viewMode, setViewMode] = useState<'text' | 'file'>('text'); // 视图模式：文本/原文
+  const [viewMode, setViewMode] = useState<'text' | 'file'>('file'); // 视图模式：默认文件原文
   const docxContainerRef = useRef<HTMLDivElement>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
@@ -42,12 +42,14 @@ const ElementExtraction: React.FC<Props> = ({ projectId, onNext }) => {
     if (projectId) {
       fetchProjectAndElements();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
   useEffect(() => {
     if (viewMode === 'file' && tenderDocUrl) {
       renderDocument();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode, tenderDocUrl]);
 
   const renderDocument = async () => {
@@ -220,17 +222,42 @@ const ElementExtraction: React.FC<Props> = ({ projectId, onNext }) => {
     if (!description || description === "无相关要求") return;
     const keyword = description.length > 20 ? description.substring(0, 20) : description;
     setSearchKeyword(keyword);
-    setViewMode('text'); // 强制切换回文本模式以显示高亮
     
-    // 延迟一下等待渲染完成后再滚动
-    setTimeout(() => {
-      if (contentRef.current) {
-        const highlightElements = contentRef.current.getElementsByClassName('highlight-match');
-        if (highlightElements.length > 0) {
-          highlightElements[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // 如果当前是原始文件预览模式，并且是DOCX，我们可以尝试在DOM中查找并滚动
+    if (viewMode === 'file' && tenderDocUrl?.toLowerCase().endsWith('.docx')) {
+      setTimeout(() => {
+        if (docxContainerRef.current) {
+          // 简单的DOM文本搜索
+          const walker = document.createTreeWalker(docxContainerRef.current, NodeFilter.SHOW_TEXT, null);
+          let node;
+          while ((node = walker.nextNode())) {
+            if (node.nodeValue && node.nodeValue.includes(keyword)) {
+              const element = node.parentElement;
+              if (element) {
+                element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                // 可选：添加临时高亮效果
+                const originalBg = element.style.backgroundColor;
+                element.style.backgroundColor = 'yellow';
+                setTimeout(() => {
+                  element.style.backgroundColor = originalBg;
+                }, 2000);
+                break;
+              }
+            }
+          }
         }
-      }
-    }, 100);
+      }, 100);
+    } else if (viewMode === 'text') {
+      // 延迟一下等待渲染完成后再滚动
+      setTimeout(() => {
+        if (contentRef.current) {
+          const highlightElements = contentRef.current.getElementsByClassName('highlight-match');
+          if (highlightElements.length > 0) {
+            highlightElements[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }
+      }, 100);
+    }
   };
 
   const activeMainCat = elements.find(c => (c.id || c.title) === activeMainTabId);
@@ -384,7 +411,7 @@ const ElementExtraction: React.FC<Props> = ({ projectId, onNext }) => {
                     <div ref={docxContainerRef} className="w-full min-h-full p-8 bg-white shadow-sm" />
                   ) : tenderDocUrl.toLowerCase().endsWith('.pdf') ? (
                     <iframe 
-                      src={tenderDocUrl} 
+                      src={`${tenderDocUrl}${searchKeyword ? `#search=${encodeURIComponent(searchKeyword)}` : ''}`} 
                       className="w-full h-full border-none"
                       title="PDF Preview"
                     />

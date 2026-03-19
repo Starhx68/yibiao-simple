@@ -15,12 +15,115 @@ const BusinessOutlineEdit: React.FC<Props> = ({ projectId, onNext }) => {
   const [outline, setOutline] = useState<OutlineNode[]>([]);
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
+  
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState('');
 
   useEffect(() => {
     if (projectId) {
       fetchDirectories();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
+
+  const saveOutline = async (newOutline: OutlineNode[]) => {
+    setOutline(newOutline);
+    if (!projectId) return;
+    try {
+      const token = localStorage.getItem('hxybs_token');
+      await fetch(`/api/business-bids/${projectId}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ directories_content: JSON.stringify(newOutline) })
+      });
+    } catch (e) {
+      console.error('Failed to save outline', e);
+    }
+  };
+
+  const handleAddSibling = (nodeId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const newOutline = [...outline];
+    let added = false;
+
+    const traverseAndAdd = (nodes: OutlineNode[], parentChildren?: OutlineNode[]) => {
+      for (let i = 0; i < nodes.length; i++) {
+        if (nodes[i].id === nodeId) {
+          const newNode = {
+            id: `node_${Date.now()}`,
+            title: '新节点',
+            children: []
+          };
+          if (parentChildren) {
+            parentChildren.splice(i + 1, 0, newNode);
+          } else {
+            newOutline.splice(i + 1, 0, newNode);
+          }
+          added = true;
+          setSelectedNodeId(newNode.id);
+          setEditingNodeId(newNode.id);
+          setEditTitle(newNode.title);
+          return;
+        }
+        if (nodes[i].children && nodes[i].children.length > 0) {
+          traverseAndAdd(nodes[i].children, nodes[i].children);
+          if (added) return;
+        }
+      }
+    };
+    traverseAndAdd(newOutline);
+    if (added) saveOutline(newOutline);
+  };
+
+  const handleEdit = (node: OutlineNode, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingNodeId(node.id);
+    setEditTitle(node.title);
+  };
+
+  const handleSaveEdit = (e?: React.MouseEvent | React.KeyboardEvent) => {
+    if (e) e.stopPropagation();
+    if (!editingNodeId) return;
+
+    const newOutline = JSON.parse(JSON.stringify(outline));
+    const updateTitle = (nodes: OutlineNode[]) => {
+      for (const node of nodes) {
+        if (node.id === editingNodeId) {
+          node.title = editTitle;
+          return true;
+        }
+        if (node.children && updateTitle(node.children)) return true;
+      }
+      return false;
+    };
+    updateTitle(newOutline);
+    saveOutline(newOutline);
+    setEditingNodeId(null);
+  };
+
+  const handleDelete = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!window.confirm("确定要删除此节点吗？")) return;
+
+    const newOutline = JSON.parse(JSON.stringify(outline));
+    const removeNode = (nodes: OutlineNode[]) => {
+      for (let i = 0; i < nodes.length; i++) {
+        if (nodes[i].id === id) {
+          nodes.splice(i, 1);
+          return true;
+        }
+        if (nodes[i].children && removeNode(nodes[i].children)) return true;
+      }
+      return false;
+    };
+    removeNode(newOutline);
+    saveOutline(newOutline);
+    if (selectedNodeId === id) setSelectedNodeId(null);
+  };
 
   const fetchDirectories = async () => {
     setLoading(true);
@@ -107,6 +210,75 @@ const BusinessOutlineEdit: React.FC<Props> = ({ projectId, onNext }) => {
     }
   };
 
+  const renderNode = (node: OutlineNode, level: number = 0) => {
+    const isSelected = selectedNodeId === node.id;
+    const isEditing = editingNodeId === node.id;
+
+    return (
+      <div key={node.id} className="text-sm">
+        <div 
+          className={`flex items-center gap-2 p-2 rounded group cursor-pointer ${isSelected ? 'bg-blue-50 border border-blue-200' : 'hover:bg-gray-50 border border-transparent'}`}
+          onClick={() => setSelectedNodeId(node.id)}
+        >
+          {node.children && node.children.length > 0 ? (
+            <span className="text-gray-400">▼</span>
+          ) : (
+            <span className="text-gray-300">-</span>
+          )}
+          
+          {isEditing ? (
+            <div className="flex-1 flex gap-2" onClick={e => e.stopPropagation()}>
+              <input
+                autoFocus
+                type="text"
+                value={editTitle}
+                onChange={e => setEditTitle(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleSaveEdit(e); }}
+                className="flex-1 border border-blue-400 rounded px-2 py-0.5 text-sm outline-none"
+              />
+              <button onClick={handleSaveEdit} className="text-green-600 hover:text-green-800 text-xs px-2">保存</button>
+              <button onClick={(e) => { e.stopPropagation(); setEditingNodeId(null); }} className="text-gray-500 hover:text-gray-700 text-xs px-2">取消</button>
+            </div>
+          ) : (
+            <>
+              <span className={`font-medium flex-1 ${isSelected ? 'text-blue-700' : ''}`}>{node.title}</span>
+              <div className="hidden group-hover:flex gap-2 ml-auto text-xs">
+                <button onClick={(e) => handleAddSibling(node.id, e)} className="text-green-600 hover:text-green-800">添加同级</button>
+                <button onClick={(e) => handleEdit(node, e)} className="text-blue-600 hover:text-blue-800">编辑</button>
+                <button onClick={(e) => handleDelete(node.id, e)} className="text-red-600 hover:text-red-800">删除</button>
+              </div>
+            </>
+          )}
+        </div>
+        
+        {node.children && node.children.length > 0 && (
+          <div className="ml-6 border-l border-gray-200 pl-2 space-y-1 mt-1">
+            {node.children.map(child => renderNode(child, level + 1))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const handleNext = async () => {
+    if (projectId) {
+      try {
+        const token = localStorage.getItem('hxybs_token');
+        await fetch(`/api/business-bids/${projectId}`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ status: 'filling' })
+        });
+      } catch (e) {
+        console.error('Failed to update project status', e);
+      }
+    }
+    onNext();
+  };
+
   return (
     <div className="bg-white shadow rounded-lg p-6 min-h-[calc(100vh-200px)] flex flex-col">
       <div className="flex justify-between items-center mb-4">
@@ -119,51 +291,24 @@ const BusinessOutlineEdit: React.FC<Props> = ({ projectId, onNext }) => {
           >
             {generating ? '重新生成中...' : '重新生成'}
           </button>
-          <button className="px-3 py-1.5 text-sm border border-blue-500 text-blue-600 rounded hover:bg-blue-50">
-            + 添加同级节点
-          </button>
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto border border-gray-200 rounded-md p-4">
+      <div className="flex-1 overflow-y-auto border border-gray-200 rounded-md p-4" onClick={() => setSelectedNodeId(null)}>
         {loading || generating ? (
           <div className="flex justify-center items-center h-full text-gray-500">
             {generating ? 'AI 正在生成目录...' : '加载中...'}
           </div>
         ) : (
           <div className="space-y-2">
-            {outline.map((node) => (
-              <div key={node.id} className="text-sm">
-                <div className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded group">
-                  <span className="text-gray-400">▼</span>
-                  <span className="font-medium">{node.title}</span>
-                  <div className="hidden group-hover:flex gap-2 ml-auto text-xs">
-                    <button className="text-blue-600 hover:text-blue-800">编辑</button>
-                    <button className="text-red-600 hover:text-red-800">删除</button>
-                  </div>
-                </div>
-                {node.children && node.children.length > 0 && (
-                  <div className="ml-6 border-l border-gray-200 pl-2 space-y-1 mt-1">
-                    {node.children.map((child) => (
-                      <div key={child.id} className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded group">
-                        <span className="text-gray-300">-</span>
-                        <span>{child.title}</span>
-                        <div className="hidden group-hover:flex gap-2 ml-auto text-xs">
-                          <button className="text-blue-600 hover:text-blue-800">编辑</button>
-                          <button className="text-red-600 hover:text-red-800">删除</button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
+            {outline.map((node) => renderNode(node))}
           </div>
         )}
       </div>
       <div className="mt-6 flex justify-end">
         <button
-          onClick={onNext}
-          className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+          onClick={handleNext}
+          disabled={generating}
+          className={`px-4 py-2 text-white rounded-md ${generating ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
         >
           下一步：数据填充
         </button>

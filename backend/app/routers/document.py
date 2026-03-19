@@ -12,9 +12,11 @@ import json
 import io
 import re
 import docx
-from docx.shared import Pt
+from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
+import base64
+from urllib.request import urlopen
 from urllib.parse import quote
 
 router = APIRouter(prefix="/api/document", tags=["文档处理"])
@@ -223,13 +225,41 @@ async def export_word(
 
         # 简单的 Markdown 段落解析：支持标题、列表、表格和基础加粗/斜体
         def add_markdown_runs(para: docx.text.paragraph.Paragraph, text: str) -> None:
-            """在指定段落中追加 markdown 文本的 runs"""
-            pattern = r"(\*\*.*?\*\*|\*.*?\*|`.*?`)"
+            """在指定段落中追加 markdown 文本的 runs，支持加粗、斜体、代码和图片"""
+            # 匹配加粗、斜体、代码和图片
+            pattern = r"(\*\*.*?\*\*|\*.*?\*|`.*?`|!\[.*?\]\(.*?\))"
             parts = re.split(pattern, text)
             for part in parts:
                 if not part:
                     continue
                 run = para.add_run()
+                
+                # 图片: ![alt](url)
+                if part.startswith("![") and "](" in part and part.endswith(")"):
+                    try:
+                        m = re.match(r"!\[(.*?)\]\((.*?)\)", part)
+                        if m:
+                            alt_text, img_url = m.groups()
+                            img_stream = None
+                            if img_url.startswith("data:image"):
+                                # Base64 图片
+                                header, encoded = img_url.split(",", 1)
+                                img_data = base64.b64decode(encoded)
+                                img_stream = io.BytesIO(img_data)
+                            elif img_url.startswith("http"):
+                                # 网络图片
+                                response = urlopen(img_url, timeout=5)
+                                img_stream = io.BytesIO(response.read())
+                            
+                            if img_stream:
+                                # 插入图片，最大宽度设为 6 英寸 (约 15 厘米) 防止超出页面
+                                run.add_picture(img_stream, width=Inches(6))
+                                continue
+                    except Exception as e:
+                        print(f"插入图片失败: {e}")
+                        # 失败则回退为普通文本
+                        pass
+
                 # 加粗
                 if part.startswith("**") and part.endswith("**") and len(part) > 4:
                     run.text = part[2:-2]
@@ -308,9 +338,11 @@ async def export_word(
                             # 跳过仅由 - 和 | 组成的分隔行
                             if not re.match(r"^\|?[-\s\|]+\|?$", stripped):
                                 cells = [c.strip() for c in stripped.split("|")]
-                                row_text = " | ".join([c for c in cells if c])
-                                if row_text:
-                                    rows.append(row_text)
+                                # 如果首尾有空元素（由于最外层的|导致），去除它们
+                                if cells and not cells[0]: cells.pop(0)
+                                if cells and not cells[-1]: cells.pop()
+                                if cells:
+                                    rows.append(cells)
                             i += 1
                         else:
                             break
@@ -373,8 +405,22 @@ async def export_word(
                         add_markdown_runs(p, text)
                 elif kind == "table":
                     rows = block[1]
-                    for row in rows:
-                        add_markdown_paragraph(row)
+                    if rows:
+                        max_cols = max(len(r) for r in rows)
+                        if max_cols > 0:
+                            table = doc.add_table(rows=len(rows), cols=max_cols)
+                            table.style = 'Table Grid'
+                            for i, row in enumerate(rows):
+                                for j, cell_text in enumerate(row):
+                                    if j < max_cols:
+                                        cell = table.cell(i, j)
+                                        # python-docx 默认有一个段落
+                                        if cell.paragraphs:
+                                            p = cell.paragraphs[0]
+                                        else:
+                                            p = cell.add_paragraph()
+                                        add_markdown_runs(p, cell_text)
+                            doc.add_paragraph() # 表格后加一个空段落，防止内容粘连
                 elif kind == "heading":
                     _, level, text = block
                     heading = doc.add_heading(text, level=level)

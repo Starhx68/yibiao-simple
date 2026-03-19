@@ -11,7 +11,7 @@ interface DocumentAnalysisProps {
   fileContent: string;
   projectOverview: string;
   techRequirements: string;
-  onFileUpload: (content: string) => void;
+  onFileUpload: (content: string, projectId?: string) => void;
   onAnalysisComplete: (overview: string, requirements: string) => void;
 }
 
@@ -108,7 +108,39 @@ const DocumentAnalysis: React.FC<DocumentAnalysisProps> = ({
         // 上传新招标文件：清空上一轮 localStorage（按你的需求）
         // 注意：这会同时清掉之前保存的草稿/正文内容缓存等
         draftStorage.clearAll();
-        onFileUpload(response.data.file_content);
+        
+        // 创建一个技术标项目
+        try {
+          const token = localStorage.getItem('hxybs_token');
+          const createRes = await fetch('/api/technical-bids/', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ project_name: file.name.replace(/\.[^/.]+$/, "") })
+          });
+          if (createRes.ok) {
+            const createData = await createRes.json();
+            onFileUpload(response.data.file_content, createData.id);
+            
+            // 更新内容到后端
+            await fetch(`/api/technical-bids/${createData.id}`, {
+              method: 'PUT',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+              },
+              body: JSON.stringify({ file_content: response.data.file_content, status: 'draft' })
+            });
+          } else {
+            onFileUpload(response.data.file_content);
+          }
+        } catch (e) {
+          console.error('Create project failed', e);
+          onFileUpload(response.data.file_content);
+        }
+
         setMessage({ type: 'success', text: response.data.message });
       } else {
         setMessage({ type: 'error', text: response.data.message });

@@ -204,6 +204,7 @@ export interface OutlineData {
 }
 
 export interface AppState {
+  projectId?: string;
   currentStep: number;
   fileContent: string;
   projectOverview: string;

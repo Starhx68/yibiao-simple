@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 import os
 from .config import settings
 from .routers import config, document, outline, content, search, expand
-from .routers import auth, resource, business_bid
+from .routers import auth, resource, business_bid, technical_bid
 from . import database
 from .models.models import User
 from .services.auth_service import get_password_hash
@@ -40,6 +40,7 @@ app.include_router(expand.router)
 app.include_router(auth.router)
 app.include_router(resource.router)
 app.include_router(business_bid.router)
+app.include_router(technical_bid.router)
 
 @app.on_event("startup")
 async def startup_event():

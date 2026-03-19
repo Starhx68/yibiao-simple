@@ -237,3 +237,17 @@ class BusinessBidDirectory(Base):
     content = Column(Text(16777215))
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+class TechnicalBidProject(Base):
+    __tablename__ = "technical_bid_projects"
+    
+    id = Column(String(36), primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    project_name = Column(String(200), nullable=False)
+    status = Column(String(20), default="draft") # draft, analyzing, outlined, generated, completed
+    file_content = Column(Text(16777215)) # 招标文件内容
+    project_overview = Column(Text(16777215)) # 项目概述
+    tech_requirements = Column(Text(16777215)) # 技术要求
+    outline_data = Column(Text(16777215)) # 目录结构及内容 JSON
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

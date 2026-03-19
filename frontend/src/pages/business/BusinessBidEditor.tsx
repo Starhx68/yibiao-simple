@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import BusinessDocumentAnalysis from './BusinessDocumentAnalysis';
 import ElementExtraction from './ElementExtraction';
 import BusinessOutlineEdit from './BusinessOutlineEdit';
@@ -6,8 +7,65 @@ import DataFilling from './DataFilling';
 import BusinessContentEdit from './BusinessContentEdit';
 
 const BusinessBidEditor: React.FC = () => {
+  const { projectId: routeProjectId } = useParams<{ projectId: string }>();
+  const navigate = useNavigate();
   const [currentStep, setCurrentStep] = useState(0);
   const [projectId, setProjectId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    if (routeProjectId) {
+      if (routeProjectId !== projectId) {
+        fetchProjectData(routeProjectId);
+      }
+    } else {
+      setProjectId(null);
+      setCurrentStep(0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeProjectId]);
+
+  const fetchProjectData = async (id: string) => {
+    setIsLoading(true);
+    try {
+      const token = localStorage.getItem('hxybs_token');
+      const res = await fetch(`/api/business-bids/${id}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setProjectId(id);
+        
+        // Determine the step based on status or data availability
+        let step = 0;
+        if (data.status === 'analyzing' || data.status === 'analyzed' || data.status === 'analyzed_with_error') {
+          step = 1;
+        } else if (data.status === 'generating') {
+          step = 2;
+        } else if (data.status === 'filling') {
+          step = 3;
+        } else if (data.status === 'filled') {
+          step = 4;
+        } else if (data.status === 'completed') {
+          step = 4;
+        } else if (data.status === 'draft') {
+          step = 0;
+        } else {
+          step = 1;
+        }
+        
+        setCurrentStep(step);
+      } else {
+        // Project not found or error, reset route
+        navigate('/business');
+      }
+    } catch (error) {
+      console.error('Failed to fetch project data', error);
+      navigate('/business');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const stepTitles = [
     '文档解析',
@@ -22,6 +80,7 @@ const BusinessBidEditor: React.FC = () => {
       case 0:
         return (
           <BusinessDocumentAnalysis
+            key={projectId || 'new'}
             projectId={projectId}
             onAnalysisComplete={(id) => {
               setProjectId(id);
@@ -72,6 +131,21 @@ const BusinessBidEditor: React.FC = () => {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {currentStep === 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm('确定要重新制作标书吗？这将清空当前的进度。')) {
+                    setProjectId(null);
+                    setCurrentStep(0);
+                    navigate('/business');
+                  }
+                }}
+                className="px-3 py-2 rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
+              >
+                新增标书
+              </button>
+            )}
             {currentStep > 0 && (
               <button
                 type="button"
@@ -104,7 +178,16 @@ const BusinessBidEditor: React.FC = () => {
           ))}
         </div>
       </div>
-      <div id="app-main-scroll">{renderStep()}</div>
+      <div id="app-main-scroll">
+        {isLoading ? (
+          <div className="flex justify-center items-center py-20">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+            <span className="ml-2 text-gray-500">加载标书数据中...</span>
+          </div>
+        ) : (
+          renderStep()
+        )}
+      </div>
     </div>
   );
 };

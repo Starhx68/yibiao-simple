@@ -89,7 +89,7 @@ const PerformanceManagement: React.FC = () => {
       const url = await resourceApi.uploadFile(file);
       setCurrentItem((prev) => ({ ...prev, [field]: url }));
       if (file.type.startsWith('image/')) {
-        await handleSmartFill(file);
+        await handleSmartFill(field, file);
       }
     } catch (error: any) {
       const msg = error?.response?.data?.detail || error?.message || '上传失败';
@@ -99,10 +99,10 @@ const PerformanceManagement: React.FC = () => {
     }
   };
 
-  const handleSmartFill = async (file: File) => {
+  const handleSmartFill = async (field: keyof Performance, file: File) => {
     setSmartFilling(true);
     try {
-      const result = await resourceApi.smartFill('performance', file);
+      const result = await resourceApi.smartFill('performance', file, String(field));
       if (!result || typeof result !== 'object' || Array.isArray(result)) {
         throw new Error('识别结果为空或格式异常，请在接口管理中检查OCR模型配置');
       }

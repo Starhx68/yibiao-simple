@@ -90,7 +90,7 @@ const PersonnelManagement: React.FC = () => {
       const url = await resourceApi.uploadFile(file);
       setCurrentItem((prev) => ({ ...prev, [field]: url }));
       if (file.type.startsWith('image/')) {
-        await handleSmartFill(file);
+        await handleSmartFill(field, file);
       }
     } catch (error: any) {
       const msg = error?.response?.data?.detail || error?.message || '上传失败';
@@ -100,19 +100,61 @@ const PersonnelManagement: React.FC = () => {
     }
   };
 
-  const handleSmartFill = async (file: File) => {
+  const normalizeGender = (v: unknown) => {
+    const s = String(v ?? '').trim();
+    if (!s) return '';
+    if (s === '男' || s.toLowerCase() === 'm' || s.toLowerCase() === 'male') return '男';
+    if (s === '女' || s.toLowerCase() === 'f' || s.toLowerCase() === 'female') return '女';
+    if (s.includes('男')) return '男';
+    if (s.includes('女')) return '女';
+    return s;
+  };
+
+  const handleSmartFill = async (field: keyof Personnel, file: File) => {
     setSmartFilling(true);
     try {
-      const result = await resourceApi.smartFill('personnel', file);
-      if (!result || typeof result !== 'object' || Array.isArray(result)) {
-        throw new Error('识别结果为空或格式异常，请在接口管理中检查OCR模型配置');
+      if (field === 'id_card_url') {
+        const result = await resourceApi.smartFill('idcard', file, 'image_url');
+        if (!result || typeof result !== 'object' || Array.isArray(result)) {
+          throw new Error('识别结果为空或格式异常，请在接口管理中检查OCR模型配置');
+        }
+        setOcrResult(result);
+        const r = result as Record<string, unknown>;
+        const name = String(r.name ?? '').trim();
+        const idNumber = String(r.id_number ?? '').trim();
+        const gender = normalizeGender(r.gender);
+        const birthDate = String(r.birth_date ?? '').trim();
+        const validFrom = String(r.valid_from ?? '').trim();
+        const validTo = String(r.valid_to ?? '').trim();
+        const longTerm = Boolean(r.long_term);
+
+        const nextPatch: Partial<Personnel> = {};
+        if (name) nextPatch.name = name;
+        if (idNumber) nextPatch.id_number = idNumber;
+        if (gender) nextPatch.gender = gender;
+        if (birthDate) nextPatch.birth_date = birthDate;
+        if (validFrom) nextPatch.id_valid_from = validFrom;
+        if (longTerm) {
+          nextPatch.id_long_term = true;
+          nextPatch.id_valid_to = '';
+        } else if (validTo) {
+          nextPatch.id_long_term = false;
+          nextPatch.id_valid_to = validTo;
+        }
+
+        setCurrentItem((prev) => ({ ...prev, ...nextPatch }));
+      } else {
+        const result = await resourceApi.smartFill('personnel', file, String(field));
+        if (!result || typeof result !== 'object' || Array.isArray(result)) {
+          throw new Error('识别结果为空或格式异常，请在接口管理中检查OCR模型配置');
+        }
+        setOcrResult(result);
+        const merged = { ...(result as Partial<Personnel>) };
+        PERSONNEL_UPLOAD_FIELDS.forEach((f) => {
+          delete merged[f];
+        });
+        setCurrentItem((prev) => ({ ...prev, ...merged }));
       }
-      setOcrResult(result);
-      const merged = { ...(result as Partial<Personnel>) };
-      PERSONNEL_UPLOAD_FIELDS.forEach((field) => {
-        delete merged[field];
-      });
-      setCurrentItem((prev) => ({ ...prev, ...merged }));
     } catch (error: any) {
       const msg = error?.response?.data?.detail || error?.message || '智能填充失败';
       alert(msg);

@@ -1,0 +1,140 @@
+[1mdiff --git a/backend/app/services/file_service.py b/backend/app/services/file_service.py[m
+[1mindex 0da8ffa..c6858c6 100644[m
+[1m--- a/backend/app/services/file_service.py[m
+[1m+++ b/backend/app/services/file_service.py[m
+[36m@@ -49,6 +49,10 @@[m [mclass FileService:[m
+         object_name = f"{settings.minio_object_prefix}/{datetime.utcnow().strftime('%Y%m%d')}/{int(time.time() * 1000)}_{safe_filename}"[m
+         guessed_content_type = mimetypes.guess_type(safe_filename)[0] or "image/jpeg"[m
+         expires_seconds = max(60, int(settings.minio_presigned_expire_seconds))[m
+[32m+[m[32m        max_retries = max(1, int(getattr(settings, "minio_upload_max_retries", 3) or 3))[m
+[32m+[m[32m        timeout_seconds = float(getattr(settings, "minio_upload_timeout_seconds", 20) or 20)[m
+[32m+[m[32m        if timeout_seconds <= 0:[m
+[32m+[m[32m            timeout_seconds = 20[m
+ [m
+         def _upload_to_minio() -> str:[m
+             client = Minio([m
+[36m@@ -57,7 +61,11 @@[m [mclass FileService:[m
+                 secret_key=secret_key,[m
+                 secure=bool(settings.minio_secure),[m
+             )[m
+[31m-            if not client.bucket_exists(settings.minio_bucket):[m
+[32m+[m[32m            try:[m
+[32m+[m[32m                bucket_exists = client.bucket_exists(settings.minio_bucket)[m
+[32m+[m[32m            except Exception as e:[m
+[32m+[m[32m                raise Exception(f"MinIO连接健康检查失败: {str(e)}")[m
+[32m+[m[32m            if not bucket_exists:[m
+                 client.make_bucket(settings.minio_bucket)[m
+             stream = io.BytesIO(image_data)[m
+             client.put_object([m
+[36m@@ -76,10 +84,17 @@[m [mclass FileService:[m
+                 expires=timedelta(seconds=expires_seconds),[m
+             )[m
+ [m
+[31m-        try:[m
+[31m-            return await asyncio.to_thread(_upload_to_minio)[m
+[31m-        except Exception as e:[m
+[31m-            raise Exception(f"MinIO图片上传失败: {str(e)}")[m
+[32m+[m[32m        last_error: Optional[Exception] = None[m
+[32m+[m[32m        for attempt in range(max_retries):[m
+[32m+[m[32m            try:[m
+[32m+[m[32m                return await asyncio.wait_for(asyncio.to_thread(_upload_to_minio), timeout=timeout_seconds)[m
+[32m+[m[32m            except asyncio.TimeoutError:[m
+[32m+[m[32m                last_error = Exception(f"第{attempt + 1}次上传超时({timeout_seconds}s)")[m
+[32m+[m[32m            except Exception as e:[m
+[32m+[m[32m                last_error = e[m
+[32m+[m[32m            if attempt < max_retries - 1:[m
+[32m+[m[32m                await asyncio.sleep(min(2 ** attempt, 5))[m
+[32m+[m[32m        raise Exception(f"MinIO图片上传失败，已重试{max_retries}次: {str(last_error)}")[m
+ [m
+     @staticmethod[m
+     def extract_images_from_pdf(file_path: str) -> List[Tuple[bytes, str, int, int]]:[m
+[36m@@ -530,8 +545,57 @@[m [mclass FileService:[m
+             raise Exception(f"Word文档读取失败: {str(e)}")[m
+     [m
+     @staticmethod[m
+[31m-    async def process_uploaded_file(file: UploadFile) -> str:[m
+[31m-        """处理上传的文件并提取文本内容"""[m
+[32m+[m[32m    async def _convert_doc_to_docx(file_path: str) -> str:[m
+[32m+[m[32m        """将.doc文件转换为.docx文件以便处理和预览"""[m
+[32m+[m[32m        import os[m
+[32m+[m[32m        import asyncio[m
+[32m+[m[41m        [m
+[32m+[m[32m        docx_path = file_path + "x"[m
+[32m+[m[41m        [m
+[32m+[m[32m        def _convert():[m
+[32m+[m[32m            try:[m
+[32m+[m[32m                import win32com.client[m
+[32m+[m[32m                import pythoncom[m
+[32m+[m[32m                pythoncom.CoInitialize()[m
+[32m+[m[41m                [m
+[32m+[m[32m                word = None[m
+[32m+[m[32m                try:[m
+[32m+[m[32m                    word = win32com.client.DispatchEx("Word.Application")[m
+[32m+[m[32m                    word.Visible = False[m
+[32m+[m[32m                    word.DisplayAlerts = False[m
+[32m+[m[41m                    [m
+[32m+[m[32m                    abs_file_path = os.path.abspath(file_path)[m
+[32m+[m[32m                    abs_docx_path = os.path.abspath(docx_path)[m
+[32m+[m[41m                    [m
+[32m+[m[32m                    doc = word.Documents.Open(abs_file_path)[m
+[32m+[m[32m                    doc.SaveAs2(abs_docx_path, FileFormat=16)[m
+[32m+[m[32m                    doc.Close()[m
+[32m+[m[32m                finally:[m
+[32m+[m[32m                    if word:[m
+[32m+[m[32m                        word.Quit()[m
+[32m+[m[41m                [m
+[32m+[m[32m                pythoncom.CoUninitialize()[m
+[32m+[m[32m            except Exception as e:[m
+[32m+[m[32m                # 尝试使用 spire.doc 作为备选[m
+[32m+[m[32m                try:[m
+[32m+[m[32m                    from spire.doc import Document, FileFormat[m
+[32m+[m[32m                    doc = Document()[m
+[32m+[m[32m                    doc.LoadFromFile(file_path)[m
+[32m+[m[32m                    doc.SaveToFile(docx_path, FileFormat.Docx)[m
+[32m+[m[32m                    doc.Close()[m
+[32m+[m[32m                except Exception as inner_e:[m
+[32m+[m[32m                    raise Exception(f"Win32com: {str(e)} | Spire: {str(inner_e)}")[m
+[32m+[m[41m                    [m
+[32m+[m[32m        await asyncio.to_thread(_convert)[m
+[32m+[m[41m        [m
+[32m+[m[32m        if not os.path.exists(docx_path):[m
+[32m+[m[32m            raise Exception("文档转换失败，未生成.docx文件")[m
+[32m+[m[41m            [m
+[32m+[m[32m        return docx_path[m
+[32m+[m
+[32m+[m[32m    @staticmethod[m
+[32m+[m[32m    async def process_uploaded_file(file: UploadFile) -> tuple[str, str]:[m
+[32m+[m[32m        """处理上传的文件并提取文本内容，返回 (文本内容, 文件保存路径)"""[m
+         content_type = (file.content_type or "").lower()[m
+         filename = (file.filename or "").lower()[m
+         is_pdf = content_type == "application/pdf" or filename.endswith(".pdf")[m
+[36m@@ -539,8 +603,12 @@[m [mclass FileService:[m
+             content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"[m
+             or filename.endswith(".docx")[m
+         )[m
+[31m-        if not is_pdf and not is_docx:[m
+[31m-            raise Exception("不支持的文件类型，请上传PDF或Word文档")[m
+[32m+[m[32m        is_doc = ([m
+[32m+[m[32m            content_type == "application/msword"[m
+[32m+[m[32m            or filename.endswith(".doc")[m
+[32m+[m[32m        )[m
+[32m+[m[32m        if not is_pdf and not is_docx and not is_doc:[m
+[32m+[m[32m            raise Exception("不支持的文件类型，请上传PDF或Word文档(.doc, .docx)")[m
+         # 检查文件大小[m
+         content = await file.read()[m
+         if len(content) > settings.max_file_size:[m
+[36m@@ -558,13 +626,17 @@[m [mclass FileService:[m
+                 text = await FileService.extract_text_from_pdf(file_path)[m
+             elif is_docx:[m
+                 text = await FileService.extract_text_from_docx(file_path)[m
+[32m+[m[32m            elif is_doc:[m
+[32m+[m[32m                docx_path = await FileService._convert_doc_to_docx(file_path)[m
+[32m+[m[32m                text = await FileService.extract_text_from_docx(docx_path)[m
+[32m+[m[32m                file_path = docx_path  # 更新为docx路径以便前端预览[m
+             else:[m
+[31m-                raise Exception("不支持的文件类型，请上传PDF或Word文档")[m
+[32m+[m[32m                raise Exception("不支持的文件类型，请上传PDF或Word文档(.doc, .docx)")[m
+ [m
+[31m-            # 成功提取后，使用安全的文件清理方法[m
+[31m-            FileService._safe_file_cleanup(file_path)[m
+[32m+[m[32m            # 注意：不再删除文件，因为前端需要预览[m

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 interface Props {
   projectId: string | null;
@@ -15,12 +15,42 @@ const BusinessContentEdit: React.FC<Props> = ({ projectId }) => {
   const [outline, setOutline] = useState<OutlineNode[]>([]);
   const [selectedNode, setSelectedNode] = useState<OutlineNode | null>(null);
   const [generating, setGenerating] = useState(false);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const skipFirstSaveRef = useRef(true);
 
   useEffect(() => {
     if (projectId) {
       fetchDirectories();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    if (skipFirstSaveRef.current) {
+      skipFirstSaveRef.current = false;
+      return;
+    }
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      try {
+        const token = localStorage.getItem('hxybs_token');
+        await fetch(`/api/business-bids/${projectId}`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ directories_content: JSON.stringify(outline) })
+        });
+      } catch (e) {
+        console.error('Failed to sync outline content', e);
+      }
+    }, 800);
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, [outline, projectId]);
 
   const fetchDirectories = async () => {
     try {
@@ -33,6 +63,7 @@ const BusinessContentEdit: React.FC<Props> = ({ projectId }) => {
       if (res.ok) {
         const data = await res.json();
         if (data.directories && data.directories.length > 0) {
+          skipFirstSaveRef.current = true;
           setOutline(data.directories);
           let firstLeaf: OutlineNode | null = null;
           const findLeaf = (nodes: OutlineNode[]) => {
@@ -158,6 +189,20 @@ const BusinessContentEdit: React.FC<Props> = ({ projectId }) => {
         a.click();
         window.URL.revokeObjectURL(url);
         document.body.removeChild(a);
+        
+        // 标记为已完成
+        if (projectId) {
+          try {
+            await fetch(`/api/business-bids/${projectId}/mark-completed`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${token}`
+              }
+            });
+          } catch (e) {
+            console.error('Failed to mark project as completed', e);
+          }
+        }
       } else {
         alert('导出失败');
       }

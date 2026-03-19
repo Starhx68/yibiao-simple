@@ -13,7 +13,7 @@ const CONTENT_BY_ID_KEY = 'yibiao:contentById:v1';
 
 export type DraftState = Pick<
   AppState,
-  'currentStep' | 'fileContent' | 'projectOverview' | 'techRequirements' | 'outlineData' | 'selectedChapter'
+  'currentStep' | 'fileContent' | 'projectOverview' | 'techRequirements' | 'outlineData' | 'selectedChapter' | 'projectId'
 >;
 
 export type ContentById = Record<string, string>; // 章节id -> content

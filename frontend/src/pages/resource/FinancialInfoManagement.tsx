@@ -96,7 +96,7 @@ const FinancialInfoManagement: React.FC = () => {
   const handleSmartFill = async (file: File) => {
     setSmartFilling(true);
     try {
-      const result = await resourceApi.smartFill('financial', file);
+      const result = await resourceApi.smartFill('financial', file, 'file_url');
       if (!result || typeof result !== 'object' || Array.isArray(result)) {
         throw new Error('识别结果为空或格式异常，请在接口管理中检查OCR模型配置');
       }

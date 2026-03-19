@@ -31,10 +31,11 @@ export const useAppState = () => {
     });
   }, []);
 
-  const updateFileContent = useCallback((fileContent: string) => {
+  const updateFileContent = useCallback((fileContent: string, projectId?: string) => {
     setState(prev => {
       const next = { ...prev, fileContent };
-      draftStorage.saveDraft({ fileContent });
+      if (projectId) next.projectId = projectId;
+      draftStorage.saveDraft({ fileContent, projectId: next.projectId });
       return next;
     });
   }, []);
@@ -50,6 +51,23 @@ export const useAppState = () => {
         projectOverview: overview,
         techRequirements: requirements,
       });
+      
+      if (prev.projectId) {
+        const token = localStorage.getItem('hxybs_token');
+        fetch(`/api/technical-bids/${prev.projectId}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ 
+            project_overview: overview, 
+            tech_requirements: requirements,
+            status: 'analyzing'
+          })
+        }).catch(e => console.error('Failed to sync analysis results', e));
+      }
+      
       return next;
     });
   }, []);
@@ -58,6 +76,22 @@ export const useAppState = () => {
     setState(prev => {
       const next = { ...prev, outlineData };
       draftStorage.saveDraft({ outlineData });
+      
+      if (prev.projectId) {
+        const token = localStorage.getItem('hxybs_token');
+        fetch(`/api/technical-bids/${prev.projectId}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ 
+            outline_data: JSON.stringify(outlineData),
+            status: 'outlined'
+          })
+        }).catch(e => console.error('Failed to sync outline', e));
+      }
+      
       return next;
     });
   }, []);
@@ -66,6 +100,14 @@ export const useAppState = () => {
     setState(prev => {
       const next = { ...prev, selectedChapter: chapterId };
       draftStorage.saveDraft({ selectedChapter: chapterId });
+      return next;
+    });
+  }, []);
+
+  const hydrateState = useCallback((newState: Partial<AppState>) => {
+    setState(prev => {
+      const next = { ...prev, ...newState };
+      draftStorage.saveDraft(next);
       return next;
     });
   }, []);
@@ -88,6 +130,11 @@ export const useAppState = () => {
     });
   }, []);
 
+  const resetState = useCallback(() => {
+    setState(initialState);
+    draftStorage.clearAll();
+  }, []);
+
   return {
     state,
     updateStep,
@@ -95,7 +142,9 @@ export const useAppState = () => {
     updateAnalysisResults,
     updateOutline,
     updateSelectedChapter,
+    hydrateState,
     nextStep,
     prevStep,
+    resetState,
   };
 };

@@ -278,11 +278,16 @@ export const resourceApi = {
     return response.data.url;
   },
 
-  async smartFill(scene: 'company' | 'qualification' | 'personnel' | 'financial' | 'performance', file: File): Promise<Record<string, unknown>> {
+  async smartFill(
+    scene: 'company' | 'qualification' | 'personnel' | 'financial' | 'performance' | 'idcard',
+    file: File,
+    targetField?: string,
+  ): Promise<Record<string, unknown>> {
     const formData = new FormData();
     formData.append('file', file);
     const response = await api.post<Record<string, unknown>>(`/api/resource/ocr/${scene}`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      params: targetField ? { target_field: targetField } : undefined,
     });
     return response.data;
   },

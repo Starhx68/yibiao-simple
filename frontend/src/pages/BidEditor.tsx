@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import DocumentAnalysis from './DocumentAnalysis';
 import OutlineEdit from './OutlineEdit';
 import ContentEdit from './ContentEdit';
@@ -11,20 +12,79 @@ interface BidEditorProps {
 }
 
 const BidEditor: React.FC<BidEditorProps> = ({ type }) => {
+  const { projectId: routeProjectId } = useParams<{ projectId: string }>();
+  const navigate = useNavigate();
+  const [isLoading, setIsLoading] = useState(false);
+
   const {
     state,
     updateFileContent,
     updateAnalysisResults,
     updateOutline,
     updateSelectedChapter,
+    hydrateState,
     nextStep,
     prevStep,
+    resetState,
   } = useAppState();
+
+  useEffect(() => {
+    if (routeProjectId) {
+      if (routeProjectId !== state.projectId) {
+        fetchProjectData(routeProjectId);
+      }
+    } else if (!routeProjectId && state.projectId) {
+      // If we navigate to /technical without ID, but state has ID, reset state
+      resetState();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeProjectId]);
+
+  const fetchProjectData = async (id: string) => {
+    setIsLoading(true);
+    try {
+      const token = localStorage.getItem('hxybs_token');
+      const res = await fetch(`/api/technical-bids/${id}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        
+        let step = 0;
+        if (data.status === 'analyzing') {
+          step = 1;
+        } else if (data.status === 'outlined' || data.status === 'generated') {
+          step = 2;
+        } else if (data.status === 'completed') {
+          step = 2;
+        } else {
+          step = 0;
+        }
+        
+        hydrateState({
+          projectId: id,
+          currentStep: step,
+          fileContent: data.file_content || '',
+          projectOverview: data.project_overview || '',
+          techRequirements: data.tech_requirements || '',
+          outlineData: data.outline_data || null,
+        });
+      } else {
+        navigate('/technical');
+      }
+    } catch (e) {
+      console.error('Failed to fetch technical project', e);
+      navigate('/technical');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const renderStep = () => {
     if (state.currentStep === 0) {
       return (
         <DocumentAnalysis
+          key={state.fileContent === '' ? 'empty' : 'filled'}
           fileContent={state.fileContent}
           projectOverview={state.projectOverview}
           techRequirements={state.techRequirements}
@@ -51,6 +111,7 @@ const BidEditor: React.FC<BidEditorProps> = ({ type }) => {
     }
     return (
       <ContentEdit
+        projectId={state.projectId}
         outlineData={state.outlineData}
         selectedChapter={state.selectedChapter}
         onChapterSelect={updateSelectedChapter}
@@ -73,6 +134,20 @@ const BidEditor: React.FC<BidEditorProps> = ({ type }) => {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {state.currentStep === 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm('确定要重新制作标书吗？这将清空当前的进度。')) {
+                    resetState();
+                    navigate('/technical');
+                  }
+                }}
+                className="px-3 py-2 rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
+              >
+                新增标书
+              </button>
+            )}
             {state.currentStep > 0 && (
               <button
                 type="button"
@@ -105,7 +180,16 @@ const BidEditor: React.FC<BidEditorProps> = ({ type }) => {
           ))}
         </div>
       </div>
-      <div id="app-main-scroll">{renderStep()}</div>
+      <div id="app-main-scroll">
+        {isLoading ? (
+          <div className="flex justify-center items-center py-20">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+            <span className="ml-2 text-gray-500">加载标书数据中...</span>
+          </div>
+        ) : (
+          renderStep()
+        )}
+      </div>
     </div>
   );
 };

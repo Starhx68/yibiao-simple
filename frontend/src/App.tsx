@@ -24,7 +24,9 @@ function App() {
         }>
           <Route index element={<HomePage />} />
           <Route path="business" element={<BusinessBidEditor />} />
+          <Route path="business/:projectId" element={<BusinessBidEditor />} />
           <Route path="technical" element={<BidEditor type="technical" />} />
+          <Route path="technical/:projectId" element={<BidEditor type="technical" />} />
           <Route path="resource/company" element={<CompanyInfoPage />} />
           <Route path="resource/qualifications" element={<QualificationManagement />} />
           <Route path="resource/personnel" element={<PersonnelManagement />} />

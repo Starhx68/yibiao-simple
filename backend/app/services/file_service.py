@@ -549,46 +549,79 @@ class FileService:
         """将.doc文件转换为.docx文件以便处理和预览"""
         import os
         import asyncio
+        import platform
         
         docx_path = file_path + "x"
         
         def _convert():
+            errors = []
+            is_windows = platform.system() == 'Windows'
+            
+            # 方案 1: Windows 环境下使用 win32com (转换效果最好)
+            if is_windows:
+                try:
+                    import win32com.client
+                    import pythoncom
+                    pythoncom.CoInitialize()
+                    
+                    word = None
+                    try:
+                        word = win32com.client.DispatchEx("Word.Application")
+                        word.Visible = False
+                        word.DisplayAlerts = False
+                        
+                        abs_file_path = os.path.abspath(file_path)
+                        abs_docx_path = os.path.abspath(docx_path)
+                        
+                        doc = word.Documents.Open(abs_file_path)
+                        doc.SaveAs2(abs_docx_path, FileFormat=16)
+                        doc.Close()
+                        return  # 成功后直接返回
+                    finally:
+                        if word:
+                            try:
+                                word.Quit()
+                            except:
+                                pass
+                        pythoncom.CoUninitialize()
+                except Exception as e:
+                    errors.append(f"Win32com: {str(e)}")
+            else:
+                errors.append("Win32com: 跳过 (非Windows环境)")
+
+            # 方案 2: 使用 spire.doc (跨平台 Python 包)
             try:
-                import win32com.client
-                import pythoncom
-                pythoncom.CoInitialize()
-                
-                word = None
-                try:
-                    word = win32com.client.DispatchEx("Word.Application")
-                    word.Visible = False
-                    word.DisplayAlerts = False
-                    
-                    abs_file_path = os.path.abspath(file_path)
-                    abs_docx_path = os.path.abspath(docx_path)
-                    
-                    doc = word.Documents.Open(abs_file_path)
-                    doc.SaveAs2(abs_docx_path, FileFormat=16)
-                    doc.Close()
-                finally:
-                    if word:
-                        try:
-                            word.Quit()
-                        except:
-                            pass
-                
-                pythoncom.CoUninitialize()
+                from spire.doc import Document, FileFormat
+                doc = Document()
+                doc.LoadFromFile(file_path)
+                doc.SaveToFile(docx_path, FileFormat.Docx)
+                doc.Close()
+                return  # 成功后直接返回
             except Exception as e:
-                # 尝试使用 spire.doc 作为备选
-                try:
-                    from spire.doc import Document, FileFormat
-                    doc = Document()
-                    doc.LoadFromFile(file_path)
-                    doc.SaveToFile(docx_path, FileFormat.Docx)
-                    doc.Close()
-                except Exception as inner_e:
-                    raise Exception(f"Win32com: {str(e)} | Spire: {str(inner_e)}")
+                errors.append(f"Spire: {str(e)}")
+
+            # 方案 3: 尝试调用 LibreOffice / soffice 命令行作为最终降级
+            try:
+                import subprocess
+                cmd = 'soffice' if is_windows else 'libreoffice'
+                if not is_windows and platform.system() == 'Darwin':
+                    cmd = '/Applications/LibreOffice.app/Contents/MacOS/soffice'
                     
+                result = subprocess.run(
+                    [cmd, '--headless', '--convert-to', 'docx', file_path, '--outdir', os.path.dirname(file_path)],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60
+                )
+                if result.returncode == 0 and os.path.exists(docx_path):
+                    return  # 成功后直接返回
+                else:
+                    err_msg = result.stderr.decode('utf-8', errors='ignore').strip() or "未生成docx文件"
+                    errors.append(f"LibreOffice: {err_msg}")
+            except Exception as e:
+                errors.append(f"LibreOffice: {str(e)}")
+
+            # 所有方案均失败
+            raise Exception("文档转换失败: " + " | ".join(errors))
+            
         await asyncio.to_thread(_convert)
         
         if not os.path.exists(docx_path):

@@ -106,13 +106,23 @@ const CompanyInfoPage: React.FC = () => {
     }
   };
 
+  const normalizeGender = (v: unknown) => {
+    const s = String(v ?? '').trim();
+    if (!s) return '';
+    if (s === '男' || s.toLowerCase() === 'm' || s.toLowerCase() === 'male') return '男';
+    if (s === '女' || s.toLowerCase() === 'f' || s.toLowerCase() === 'female') return '女';
+    if (s.includes('男')) return '男';
+    if (s.includes('女')) return '女';
+    return s;
+  };
+
   const handleUpload = async (field: keyof CompanyInfo, file: File) => {
     setUploadingField(field);
     try {
       const url = await resourceApi.uploadFile(file);
       setField(field, url);
       if (file.type.startsWith('image/')) {
-        await handleSmartFill(file);
+        await handleSmartFill(field, file);
       }
     } finally {
       setUploadingField(null);
@@ -123,10 +133,60 @@ const CompanyInfoPage: React.FC = () => {
     setField(field, '');
   };
 
-  const handleSmartFill = async (file: File) => {
+  const handleSmartFill = async (field: keyof CompanyInfo, file: File) => {
     setSmartFilling(true);
     try {
-      const result = await resourceApi.smartFill('company', file);
+      if (field === 'legal_person_id_card_url' || field === 'authorized_person_id_card_url') {
+        const result = await resourceApi.smartFill('idcard', file, 'image_url');
+        if (!result || typeof result !== 'object' || Array.isArray(result)) {
+          throw new Error('识别结果为空或格式异常，请在接口管理中检查OCR模型配置');
+        }
+        setOcrResult(result);
+        const r = result as Record<string, unknown>;
+        const nextPatch: Partial<CompanyInfo> = {};
+        const name = String(r.name ?? '').trim();
+        const idNumber = String(r.id_number ?? '').trim();
+        const gender = normalizeGender(r.gender);
+        const birthDate = String(r.birth_date ?? '').trim();
+        const validFrom = String(r.valid_from ?? '').trim();
+        const validTo = String(r.valid_to ?? '').trim();
+        const longTerm = Boolean(r.long_term);
+
+        if (field === 'legal_person_id_card_url') {
+          if (name) nextPatch.legal_person = name;
+          if (idNumber) nextPatch.legal_person_id_number = idNumber;
+          if (gender) nextPatch.legal_person_gender = gender;
+          if (birthDate) nextPatch.legal_person_birth_date = birthDate;
+          if (validFrom) nextPatch.legal_person_id_valid_from = validFrom;
+          if (longTerm) {
+            nextPatch.legal_person_id_long_term = true;
+            nextPatch.legal_person_id_valid_to = '';
+          } else if (validTo) {
+            nextPatch.legal_person_id_valid_to = validTo;
+            nextPatch.legal_person_id_long_term = false;
+          }
+        } else {
+          if (name) nextPatch.authorized_person = name;
+          if (idNumber) nextPatch.authorized_person_id_number = idNumber;
+          if (gender) nextPatch.authorized_person_gender = gender;
+          if (birthDate) nextPatch.authorized_person_birth_date = birthDate;
+          if (validFrom) nextPatch.authorized_person_id_valid_from = validFrom;
+          if (longTerm) {
+            nextPatch.authorized_person_id_long_term = true;
+            nextPatch.authorized_person_id_valid_to = '';
+          } else if (validTo) {
+            nextPatch.authorized_person_id_valid_to = validTo;
+            nextPatch.authorized_person_id_long_term = false;
+          }
+        }
+
+        setForm((prev) => ({ ...prev, ...nextPatch }));
+        return;
+      }
+
+      if (field !== 'business_license_url' && field !== 'bank_license_url') return;
+
+      const result = await resourceApi.smartFill('company', file, String(field));
       if (!result || typeof result !== 'object' || Array.isArray(result)) {
         throw new Error('识别结果为空或格式异常，请在接口管理中检查OCR模型配置');
       }

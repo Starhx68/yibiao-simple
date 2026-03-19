@@ -1,7 +1,7 @@
 /**
  * 内容编辑页面 - 完整标书预览和生成
  */
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { OutlineData, OutlineItem } from '../types';
 import { DocumentTextIcon, PlayIcon, DocumentArrowDownIcon, CheckCircleIcon, ExclamationCircleIcon, ArrowUpIcon } from '@heroicons/react/24/outline';
@@ -10,6 +10,7 @@ import { saveAs } from 'file-saver';
 import { draftStorage } from '../utils/draftStorage';
 
 interface ContentEditProps {
+  projectId?: string;
   outlineData: OutlineData | null;
   selectedChapter: string;
   onChapterSelect: (chapterId: string) => void;
@@ -25,6 +26,7 @@ interface GenerationProgress {
 
 
 const ContentEdit: React.FC<ContentEditProps> = ({
+  projectId,
   outlineData,
   selectedChapter,
   onChapterSelect,
@@ -39,6 +41,8 @@ const ContentEdit: React.FC<ContentEditProps> = ({
   });
   const [leafItems, setLeafItems] = useState<OutlineItem[]>([]);
   const [showScrollToTop, setShowScrollToTop] = useState(false);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const skipFirstSaveRef = useRef(true);
 
   // 收集所有叶子节点
   const collectLeafItems = useCallback((items: OutlineItem[]): OutlineItem[] => {
@@ -91,6 +95,7 @@ const ContentEdit: React.FC<ContentEditProps> = ({
 
   useEffect(() => {
     if (outlineData) {
+      skipFirstSaveRef.current = true;
       const leaves = collectLeafItems(outlineData.outline);
       // 恢复本地缓存的正文内容（仅对叶子节点生效）
       const filtered = draftStorage.filterContentByOutlineLeaves(outlineData.outline);
@@ -106,6 +111,62 @@ const ContentEdit: React.FC<ContentEditProps> = ({
       setProgress(prev => ({ ...prev, total: leaves.length }));
     }
   }, [outlineData, collectLeafItems]);
+
+  const applyLeafContents = useCallback((items: OutlineItem[], contentById: Record<string, string>): OutlineItem[] => {
+    return items.map(item => {
+      if (!item.children || item.children.length === 0) {
+        return { ...item, content: contentById[item.id] ?? (item.content || '') };
+      }
+      return {
+        ...item,
+        children: applyLeafContents(item.children, contentById),
+      };
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!projectId || !outlineData) return;
+    if (leafItems.length === 0) return;
+    if (skipFirstSaveRef.current) {
+      skipFirstSaveRef.current = false;
+      return;
+    }
+
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      try {
+        const contentById: Record<string, string> = {};
+        for (const item of leafItems) {
+          contentById[item.id] = item.content || '';
+        }
+
+        const updatedOutlineData: OutlineData = {
+          ...outlineData,
+          outline: applyLeafContents(outlineData.outline, contentById),
+        };
+
+        const hasAnyContent = leafItems.some(i => (i.content || '').trim().length > 0);
+        const token = localStorage.getItem('hxybs_token');
+        await fetch(`/api/technical-bids/${projectId}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            outline_data: JSON.stringify(updatedOutlineData),
+            status: hasAnyContent ? 'generated' : 'outlined'
+          })
+        });
+      } catch (e) {
+        console.error('Failed to sync outline content', e);
+      }
+    }, 1000);
+
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, [leafItems, outlineData, projectId, applyLeafContents]);
 
   // 监听页面滚动，控制回到顶部按钮的显示
   useEffect(() => {
@@ -395,6 +456,20 @@ const ContentEdit: React.FC<ContentEditProps> = ({
       }
       const blob = await response.blob();
       saveAs(blob, `${outlineData.project_name || '标书文档'}.docx`);
+      
+      if (projectId) {
+        try {
+          const token = localStorage.getItem('hxybs_token');
+          await fetch(`/api/technical-bids/${projectId}/mark-completed`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          });
+        } catch (e) {
+          console.error('Failed to mark project as completed', e);
+        }
+      }
       
     } catch (error) {
       console.error('导出失败:', error);
