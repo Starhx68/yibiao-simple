@@ -72,7 +72,7 @@ const BusinessBidEditor: React.FC = () => {
     '要素提取',
     '目录生成',
     '数据填充',
-    '内容生成与导出'
+    'AI核验与导出'
   ];
 
   const renderStep = () => {

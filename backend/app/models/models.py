@@ -208,6 +208,7 @@ class BusinessBidProject(Base):
     tender_content = Column(Text(16777215)) # 存储解析后的文本
     elements_content = Column(Text(16777215)) # 存储解析后的商务要素JSON
     directories_content = Column(Text(16777215)) # 存储生成的目录JSON
+    other_urls = Column(Text) # 存储其他生成的URL，例如 format_document_url
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

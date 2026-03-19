@@ -46,25 +46,26 @@ def generate_outline_prompt(overview, requirements):
   2. 章节名称要专业、准确，符合投标文件规范
   3. 一级目录名称要与技术评分要求中的章节名称一致，如果技术评分要求中没有章节名称，则结合技术评分要求中的内容，生成一级目录名称
   4. 一共包括三级目录
-  5. 返回标准JSON格式，包含章节编号、标题、描述和子章节
-  6. 除了JSON结果外，不要输出任何其他内容
+  5. 【极其重要】：必须在每个目录项的 `title` 字段前自动加上规范的章节编号（如：一、 / 1. / 1.1 / (1) 等），绝对不能只输出光秃秃的文本标题！
+  6. 返回标准JSON格式，包含章节编号、标题、描述和子章节
+  7. 除了JSON结果外，不要输出任何其他内容
 
   JSON格式要求：
   {
     "outline": [
       {
         "id": "1",
-        "title": "",
+        "title": "一、项目概述",
         "description": "",
         "children": [
           {
             "id": "1.1",
-            "title": "",
+            "title": "1. 项目背景",
             "description": "",
             "children":[
                 {
                   "id": "1.1.1",
-                  "title": "",
+                  "title": "1.1 项目目标",
                   "description": ""
                 }
             ]
@@ -83,7 +84,8 @@ def generate_outline_prompt(overview, requirements):
   技术评分要求：
   {requirements}
 
-  请生成完整的技术标目录结构，确保覆盖所有技术评分要点。"""
+  请生成完整的技术标目录结构，确保覆盖所有技术评分要点。
+  【警告】：你输出的所有节点的 title 必须强制以正确的章节序号开头！"""
   return system_prompt, user_prompt
 
 
@@ -96,25 +98,26 @@ def generate_outline_with_old_prompt(overview, requirements, old_outline):
   2. 章节名称要专业、准确，符合投标文件规范
   3. 一级目录名称要与技术评分要求中的章节名称一致，如果技术评分要求中没有章节名称，则结合技术评分要求中的内容，生成一级目录名称
   4. 一共包括三级目录
-  5. 返回标准JSON格式，包含章节编号、标题、描述和子章节
-  6. 除了JSON结果外，不要输出任何其他内容
+  5. 【极其重要】：必须在每个目录项的 `title` 字段前自动加上规范的章节编号（如：一、 / 1. / 1.1 / (1) 等），绝对不能只输出光秃秃的文本标题！
+  6. 返回标准JSON格式，包含章节编号、标题、描述和子章节
+  7. 除了JSON结果外，不要输出任何其他内容
 
   JSON格式要求：
   {
     "outline": [
       {
         "id": "1",
-        "title": "",
+        "title": "一、项目概述",
         "description": "",
         "children": [
           {
             "id": "1.1",
-            "title": "",
+            "title": "1. 项目背景",
             "description": "",
             "children":[
                 {
                   "id": "1.1.1",
-                  "title": "",
+                  "title": "1.1 项目目标",
                   "description": ""
                 }
             ]
@@ -135,5 +138,6 @@ def generate_outline_with_old_prompt(overview, requirements, old_outline):
   技术评分要求：
   {requirements}
 
-  请生成完整的技术标目录结构，确保覆盖所有技术评分要点。"""
+  请生成完整的技术标目录结构，确保覆盖所有技术评分要点。
+  【警告】：你输出的所有节点的 title 必须强制以正确的章节序号开头！"""
   return system_prompt, user_prompt

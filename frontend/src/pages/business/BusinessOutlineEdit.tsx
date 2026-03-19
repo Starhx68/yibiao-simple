@@ -27,6 +27,54 @@ const BusinessOutlineEdit: React.FC<Props> = ({ projectId, onNext }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
+  const stripChapterPrefix = (title: string) => {
+    let cleaned = (title || '').trim();
+    cleaned = cleaned.replace(/^\s*第[一二三四五六七八九十百千零〇两\d]+[章节部分篇卷][\s、.．:：-]*/, '');
+    cleaned = cleaned.replace(/^\s*[（(]?\d+[）)](?:\.\d+)*[、.．:：-]?\s*/, '');
+    cleaned = cleaned.replace(/^\s*\d+(?:\.\d+)*[、.．:：-]?\s*/, '');
+    cleaned = cleaned.replace(/^\s*[一二三四五六七八九十百千零〇两]+[、.．:：-]\s*/, '');
+    cleaned = cleaned.replace(/^\s*[（(][一二三四五六七八九十百千零〇两]+[）)][、.．:：-]?\s*/, '');
+    return cleaned.trim();
+  };
+
+  const toChineseNumeral = (num: number): string => {
+    const digits = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+    if (num <= 10) return num === 10 ? '十' : digits[num];
+    if (num < 20) return `十${digits[num - 10]}`;
+    if (num < 100) {
+      const tens = Math.floor(num / 10);
+      const units = num % 10;
+      return units === 0 ? `${digits[tens]}十` : `${digits[tens]}十${digits[units]}`;
+    }
+    return `${num}`;
+  };
+
+  const buildChapterPrefix = (pathIndexes: number[]) => {
+    const depth = pathIndexes.length - 1;
+    const current = pathIndexes[pathIndexes.length - 1];
+    if (depth === 0) return `${toChineseNumeral(current)}、`;
+    if (depth === 1) return `${current}.`;
+    if (depth === 2) return `${pathIndexes[1]}.${current}`;
+    return `(${current})`;
+  };
+
+  const ensureDirectoryNumbering = (directories: OutlineNode[]): OutlineNode[] => {
+    const cloned = JSON.parse(JSON.stringify(directories || [])) as OutlineNode[];
+    const walk = (nodes: OutlineNode[], pathIndexes: number[]) => {
+      if (!Array.isArray(nodes)) return;
+      nodes.forEach((node, index) => {
+        const currentPath = [...pathIndexes, index + 1];
+        const baseTitle = stripChapterPrefix(node.title || '') || (node.title || '').trim();
+        node.title = `${buildChapterPrefix(currentPath)} ${baseTitle}`.trim();
+        if (Array.isArray(node.children) && node.children.length > 0) {
+          walk(node.children, currentPath);
+        }
+      });
+    };
+    walk(cloned, []);
+    return cloned;
+  };
+
   const saveOutline = async (newOutline: OutlineNode[]) => {
     setOutline(newOutline);
     if (!projectId) return;
@@ -125,7 +173,7 @@ const BusinessOutlineEdit: React.FC<Props> = ({ projectId, onNext }) => {
     if (selectedNodeId === id) setSelectedNodeId(null);
   };
 
-  const fetchDirectories = async () => {
+  const fetchDirectories = async (generateIfEmpty: boolean = true) => {
     setLoading(true);
     try {
       const token = localStorage.getItem('hxybs_token');
@@ -137,10 +185,13 @@ const BusinessOutlineEdit: React.FC<Props> = ({ projectId, onNext }) => {
       if (res.ok) {
         const data = await res.json();
         if (data.directories && data.directories.length > 0) {
-          setOutline(data.directories);
+          const normalized = ensureDirectoryNumbering(data.directories as OutlineNode[]);
+          setOutline(normalized);
+          return normalized;
         } else {
-          // If no directories, generate them
-          generateDirectories();
+          if (generateIfEmpty) {
+            generateDirectories();
+          }
         }
       }
     } catch (error) {
@@ -148,6 +199,7 @@ const BusinessOutlineEdit: React.FC<Props> = ({ projectId, onNext }) => {
     } finally {
       setLoading(false);
     }
+    return [];
   };
 
   const generateDirectories = async () => {
@@ -192,7 +244,13 @@ const BusinessOutlineEdit: React.FC<Props> = ({ projectId, onNext }) => {
         }
         try {
           const parsed = JSON.parse(fullJson);
-          setOutline(parsed);
+          const savedDirectories = await fetchDirectories(false);
+          if (savedDirectories.length > 0) {
+            setOutline(savedDirectories);
+          } else {
+            const normalized = ensureDirectoryNumbering(parsed as OutlineNode[]);
+            await saveOutline(normalized);
+          }
         } catch (e) {
            console.error("JSON parse error for outline", e);
            // Fallback default

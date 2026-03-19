@@ -165,6 +165,9 @@ async def analyze_business_bid_stream(project_id: str, current_user: User = Depe
 - 废标相关商务情形：所有商务类废标情形。
 - 特殊项目商务补充要求：工程类/服务类/货物类的专项商务要求。
 
+# 七、关键信息与占位符映射
+- 提取用于投标文件的关键实体信息，并设定统一的占位符。例如：项目名称对应 {{PROJECT_NAME}}，招标人对应 {{TENDERER_NAME}}，投标人名称对应 {{COMPANY_NAME}}，法定代表人对应 {{LEGAL_REP_NAME}}，投标总价对应 {{BID_PRICE}}，投标有效期对应 {{BID_VALIDITY}} 等。
+
 必须严格输出为JSON数组格式，结构如下：
 [
   {
@@ -175,6 +178,18 @@ async def analyze_business_bid_stream(project_id: str, current_user: User = Depe
         "items": [
           {"name": "投标人主体类型", "description": "..."},
           {"name": "营业执照相关要求", "description": "..."}
+        ]
+      }
+    ]
+  },
+  {
+    "title": "关键信息与占位符映射",
+    "subcategories": [
+      {
+        "title": "项目与企业信息",
+        "items": [
+          {"name": "项目名称", "placeholder": "{{PROJECT_NAME}}", "value": "提取到的实际项目名称，例如：XXX采购项目"},
+          {"name": "招标人", "placeholder": "{{TENDERER_NAME}}", "value": "提取到的实际招标人名称"}
         ]
       }
     ]
@@ -458,7 +473,7 @@ def extract_content_for_directories(directories, project):
     import os
     import json
     import re
-    from app.core.config import settings
+    from app.config import settings
 
     content_text = project.tender_content or ""
     format_chapter_pos, format_chapter_end, chapter_text = get_format_chapter_info(content_text)
@@ -467,23 +482,29 @@ def extract_content_for_directories(directories, project):
     html_elements = []
     use_html = False
     
-    if project.other_urls:
-        try:
-            other_urls = json.loads(project.other_urls)
-            format_doc_url = other_urls.get("format_document_url")
-            if format_doc_url:
-                filename = format_doc_url.split('/')[-1]
-                docx_path = os.path.join(settings.upload_dir, filename)
-                if os.path.exists(docx_path):
-                    with open(docx_path, "rb") as f:
-                        result = mammoth.convert_to_html(f)
-                        html = result.value
-                    soup = BeautifulSoup(html, 'html.parser')
-                    html_elements = soup.find_all(recursive=False)
-                    if html_elements:
-                        use_html = True
-        except Exception as e:
-            logger.error(f"Failed to parse docx to HTML with mammoth: {e}")
+    # 优先尝试从原文件提取 HTML，避免裁切后的 docx 损坏导致 mammoth 崩溃
+    docx_url = project.tender_document_url
+    if docx_url and docx_url.endswith('.docx'):
+        filename = docx_url.split('/')[-1]
+        docx_path = os.path.join(settings.upload_dir, filename)
+        if os.path.exists(docx_path):
+            try:
+                with open(docx_path, "rb") as f:
+                    style_map = """
+                    p[style-name='Heading 1'] => h1:fresh
+                    p[style-name='Heading 2'] => h2:fresh
+                    p[style-name='Heading 3'] => h3:fresh
+                    table => table:fresh
+                    u => u
+                    """
+                    result = mammoth.convert_to_html(f, style_map=style_map)
+                    html = result.value
+                soup = BeautifulSoup(html, 'html.parser')
+                html_elements = soup.find_all(recursive=False)
+                if html_elements:
+                    use_html = True
+            except Exception as e:
+                logger.error(f"Failed to parse original docx to HTML with mammoth: {e}")
 
     flat_nodes = []
     def flatten(nodes):
@@ -497,6 +518,31 @@ def extract_content_for_directories(directories, project):
         t = re.sub(r"^[一二三四五六七八九十\d\.\s、]+", "", t).strip()
         return t
 
+    # 找到 html 中的格式章节起始位置，跳过目录中的干扰项
+    html_format_chapter_idx = 0
+    html_format_chapter_end_idx = 0
+    
+    if use_html:
+        html_format_chapter_end_idx = len(html_elements)
+        for idx, el in enumerate(html_elements):
+            text = el.get_text().strip()
+            # 必须是独立的标题行，不能太长
+            if re.match(r"^(?:第[一二三四五六七八九十百]+[章部分][ \t]+)?.*(?:招标|投标)文件.*格式.*$", text) and len(text) < 50:
+                # 为了防止匹配到目录中的“第八章 投标文件格式 ........... 150”或包含制表符加页码的
+                if not re.search(r"(\.{3,}|\t)\s*\d+", text):
+                    html_format_chapter_idx = idx
+                    # 不 break，取最后一个匹配的（通常真实章节在目录之后）
+        
+        # 寻找格式章节的结束位置（即下一个大章节的起始位置）
+        if html_format_chapter_idx > 0:
+            for idx in range(html_format_chapter_idx + 1, len(html_elements)):
+                text = html_elements[idx].get_text().strip()
+                # 匹配 第X章 或 第X部分
+                if re.match(r"^第[一二三四五六七八九十百]+[章部分][ \t]+", text) and len(text) < 50:
+                    if not re.search(r"(\.{3,}|\t)\s*\d+", text):
+                        html_format_chapter_end_idx = idx
+                        break
+
     for i, node in enumerate(flat_nodes):
         title = node.get("title", "")
         next_title = None
@@ -509,28 +555,44 @@ def extract_content_for_directories(directories, project):
             core_next_title = clean_title(next_title) if next_title else None
             
             start_idx = -1
-            for idx, el in enumerate(html_elements):
+            # 放宽匹配条件，只要包含即可，不再限制长度，因为有些标题会被包裹在很长的格式段落中
+            # 仅在“投标文件格式”章节内查找
+            for idx in range(html_format_chapter_idx, html_format_chapter_end_idx):
+                el = html_elements[idx]
                 text = el.get_text().strip()
-                # 寻找包含核心标题的段落，且不要太长
-                if core_title and core_title in text and len(text) < len(core_title) + 50:
+                # 针对标题行，通常不会太长，但为了容错，把长度限制放宽到 100
+                if core_title and core_title in text and len(text) < len(core_title) + 100:
                     start_idx = idx
                     break
             
             if start_idx != -1:
-                end_idx = len(html_elements)
+                end_idx = html_format_chapter_end_idx
                 if core_next_title:
-                    for idx in range(start_idx + 1, len(html_elements)):
+                    for idx in range(start_idx + 1, html_format_chapter_end_idx):
                         text = html_elements[idx].get_text().strip()
-                        if core_next_title in text and len(text) < len(core_next_title) + 50:
+                        if core_next_title in text and len(text) < len(core_next_title) + 100:
                             end_idx = idx
                             break
                 
                 # 拼接 HTML
                 html_parts = []
                 for idx in range(start_idx, end_idx):
-                    html_parts.append(str(html_elements[idx]))
+                    # 将 html 字符串转存
+                    el_str = str(html_elements[idx])
+                    html_parts.append(el_str)
                     
-                node["content"] = "".join(html_parts)
+                # 过滤掉一些可能导致编辑器报错的无意义标签，比如空锚点
+                raw_html = ''.join(html_parts)
+                raw_html = re.sub(r'<a id="[^"]+"></a>', '', raw_html)
+                
+                # 为保证原样显示，补充必要的tbody标签，并增加表格边框，防止WangEditor过滤或无边框
+                raw_html = raw_html.replace('<table>', '<table border="1" width="100%"><tbody>')
+                raw_html = raw_html.replace('</table>', '</tbody></table>')
+                
+                # wangEditor v5 严格过滤不支持的标签(如 div)。为保证原样显示，不使用 div 包裹，直接返回 p 和 table 等基础标签
+                wrapped_html = raw_html
+                if not node.get("content"):
+                    node["content"] = wrapped_html
                 continue  # 成功提取 HTML，跳过纯文本提取
         
         # 降级或未匹配到 HTML，使用原有的纯文本提取逻辑
@@ -538,9 +600,11 @@ def extract_content_for_directories(directories, project):
         
         if start < 0:
             if format_chapter_pos > 0:
-                node["content"] = "【未精确匹配到该标题，以下为投标文件格式章节内容参考】\n\n" + content_text[format_chapter_pos:min(format_chapter_pos+2000, format_chapter_end)]
+                if not node.get("content"):
+                    node["content"] = "【未精确匹配到该标题，以下为投标文件格式章节内容参考】\n\n" + content_text[format_chapter_pos:min(format_chapter_pos+2000, format_chapter_end)]
             else:
-                node["content"] = ""
+                if not node.get("content"):
+                    node["content"] = ""
         else:
             end = format_chapter_end
             if next_title:
@@ -548,7 +612,120 @@ def extract_content_for_directories(directories, project):
                 if found > start:
                     end = found
             extracted = content_text[start:end].strip("\n")
-            node["content"] = extracted
+            if not node.get("content"):
+                node["content"] = extracted
+
+def _to_chinese_numeral(num: int) -> str:
+    if num <= 0:
+        return str(num)
+    digits = "零一二三四五六七八九"
+    if num < 10:
+        return digits[num]
+    if num < 20:
+        return "十" + (digits[num % 10] if num % 10 else "")
+    if num < 100:
+        tens = num // 10
+        ones = num % 10
+        return digits[tens] + "十" + (digits[ones] if ones else "")
+    if num < 1000:
+        hundreds = num // 100
+        remainder = num % 100
+        if remainder == 0:
+            return digits[hundreds] + "百"
+        if remainder < 10:
+            return digits[hundreds] + "百零" + digits[remainder]
+        return digits[hundreds] + "百" + _to_chinese_numeral(remainder)
+    thousands = num // 1000
+    remainder = num % 1000
+    if remainder == 0:
+        return _to_chinese_numeral(thousands) + "千"
+    if remainder < 100:
+        return _to_chinese_numeral(thousands) + "千零" + _to_chinese_numeral(remainder)
+    return _to_chinese_numeral(thousands) + "千" + _to_chinese_numeral(remainder)
+
+def _strip_chapter_prefix(title: str) -> str:
+    if not isinstance(title, str):
+        return ""
+    cleaned = title.strip()
+    cleaned = re.sub(r"^\s*第[一二三四五六七八九十百千零〇两\d]+[章节部分篇卷][\s、.．:：-]*", "", cleaned)
+    cleaned = re.sub(r"^\s*[（(]?\d+[）)](?:\.\d+)*[、.．:：-]?\s*", "", cleaned)
+    cleaned = re.sub(r"^\s*\d+(?:\.\d+)*[、.．:：-]?\s*", "", cleaned)
+    cleaned = re.sub(r"^\s*[一二三四五六七八九十百千零〇两]+[、.．:：-]\s*", "", cleaned)
+    cleaned = re.sub(r"^\s*[（(][一二三四五六七八九十百千零〇两]+[）)][、.．:：-]?\s*", "", cleaned)
+    return cleaned.strip()
+
+def _build_chapter_prefix(path_indexes: List[int]) -> str:
+    depth = len(path_indexes) - 1
+    current = path_indexes[-1]
+    if depth == 0:
+        return f"{_to_chinese_numeral(current)}、"
+    if depth == 1:
+        return f"{current}."
+    if depth == 2:
+        return f"{path_indexes[1]}.{current}"
+    return f"({current})"
+
+def ensure_directory_numbering(directories) -> None:
+    def walk(nodes, path_indexes: List[int]):
+        if not isinstance(nodes, list):
+            return
+        for idx, node in enumerate(nodes, start=1):
+            if not isinstance(node, dict):
+                continue
+            current_path = path_indexes + [idx]
+            title = node.get("title", "")
+            base_title = _strip_chapter_prefix(title) or str(title or "").strip()
+            prefix = _build_chapter_prefix(current_path)
+            node["title"] = f"{prefix} {base_title}".strip()
+            children = node.get("children")
+            if isinstance(children, list) and children:
+                walk(children, current_path)
+    walk(directories, [])
+
+def replace_placeholders_in_directories(directories: list, elements_content: str) -> None:
+    if not elements_content:
+        return
+    try:
+        elements = json.loads(elements_content)
+        replacements = []
+        
+        for category in elements:
+            if category.get("title") == "关键信息与占位符映射":
+                for subcat in category.get("subcategories", []):
+                    for item in subcat.get("items", []):
+                        placeholder = item.get("placeholder", "")
+                        val = item.get("value") or item.get("description", "")
+                        
+                        if placeholder and val and len(val) >= 2:
+                            # Filter out placeholder texts from prompt
+                            if "提取到" not in val and "实际" not in val and "例如" not in val and "获取到" not in val:
+                                replacements.append((val, placeholder))
+        
+        if not replacements:
+            return
+
+        # Sort replacements by length descending to replace longer strings first
+        replacements.sort(key=lambda x: len(x[0]), reverse=True)
+
+        def walk_and_replace(nodes):
+            if not isinstance(nodes, list):
+                return
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                content = node.get("content", "")
+                if content:
+                    for val, placeholder in replacements:
+                        content = content.replace(val, placeholder)
+                    node["content"] = content
+                
+                children = node.get("children")
+                if isinstance(children, list) and children:
+                    walk_and_replace(children)
+
+        walk_and_replace(directories)
+    except Exception as e:
+        logger.error(f"Failed to replace placeholders in directories: {e}")
 
 @router.post("/{project_id}/generate-directories-stream")
 async def generate_business_directories_stream(project_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -572,27 +749,35 @@ async def generate_business_directories_stream(project_id: str, current_user: Us
             
         if chapter_text:
             system_prompt = """你是一名专业的标书编写专家。请根据提供的【投标文件格式】或【招标文件格式】章节内容，按其原本的目录层次生成一份标准的商务标目录大纲。
-请严格输出JSON格式，格式如下：
+请严格输出JSON格式，并且【极其重要】：你必须在每个目录项的 `title` 字段前自动加上规范的章节编号（如：一、 / 1. / 1.1 / (1) 等），绝对不能只输出光秃秃的文本标题！
+格式要求如下：
 [
   {
     "id": "1",
-    "title": "法定代表人身份证明",
+    "title": "一、法定代表人身份证明",
     "description": "提供法定代表人身份证正反面复印件及身份证明书",
-    "children": []
+    "children": [
+      {
+        "id": "1.1",
+        "title": "1. 身份证明书原件",
+        "description": "..."
+      }
+    ]
   },
   ...
 ]
 请确保直接输出JSON，不要包含任何其他说明文字、Markdown代码块标记。"""
             
             # 截取前8000字，避免超出token限制，通常目录结构在章节开头
-            user_prompt = f"请根据以下提取的格式章节内容，提取其目录层次生成商务标目录大纲：\n\n{chapter_text[:8000]}"
+            user_prompt = f"请根据以下提取的格式章节内容，提取其目录层次生成商务标目录大纲。\n\n【警告】：你输出的所有节点的 title 必须强制以正确的章节序号开头（即使原文中没有序号，你也要自动补齐！）。\n\n{chapter_text[:8000]}"
         else:
             system_prompt = """你是一名专业的标书编写专家。请根据提供的商务要求要素，生成一份标准的商务标目录大纲。
-请严格输出JSON格式，格式如下：
+请严格输出JSON格式，并且【极其重要】：你必须在每个目录项的 `title` 字段前自动加上标准的章节编号（如：一、 / 1. / 1.1 / (1) 等），绝对不能只输出光秃秃的文本标题！
+格式要求如下：
 [
   {
     "id": "1",
-    "title": "法定代表人身份证明",
+    "title": "一、法定代表人身份证明",
     "description": "提供法定代表人身份证正反面复印件及身份证明书",
     "children": []
   },
@@ -602,7 +787,7 @@ async def generate_business_directories_stream(project_id: str, current_user: Us
 请确保直接输出JSON，不要包含任何其他说明文字、Markdown代码块标记。"""
             
             elements_str = project.elements_content or "{}"
-            user_prompt = f"请根据以下商务要素，生成商务标目录大纲：\n\n{elements_str}"
+            user_prompt = f"请根据以下商务要素，生成商务标目录大纲。\n\n【警告】：你输出的所有节点的 title 必须强制以正确的章节序号开头！\n\n{elements_str}"
         
         messages = [
             {"role": "system", "content": system_prompt},
@@ -638,15 +823,21 @@ async def generate_business_directories_stream(project_id: str, current_user: Us
                 except Exception as ex:
                     logger.error(f"Failed to generate format word document: {ex}")
 
+                directories = None
                 try:
                     directories = json.loads(cleaned_response)
-                    
-                    if project_gen.tender_content:
-                        extract_content_for_directories(directories, project_gen)
-                                
+                    ensure_directory_numbering(directories)
                     cleaned_response = json.dumps(directories, ensure_ascii=False)
                 except Exception as ex:
-                    logger.error(f"Failed to pre-extract content for directories: {ex}")
+                    logger.error(f"Failed to normalize generated directories: {ex}")
+
+                if directories is not None and project_gen.tender_content:
+                    try:
+                        extract_content_for_directories(directories, project_gen)
+                        replace_placeholders_in_directories(directories, project_gen.elements_content)
+                        cleaned_response = json.dumps(directories, ensure_ascii=False)
+                    except Exception as ex:
+                        logger.error(f"Failed to pre-extract content for directories: {ex}")
 
                 # Save the result to DB
                 project_gen.directories_content = cleaned_response
@@ -676,6 +867,12 @@ def get_business_directories(project_id: str, current_user: User = Depends(get_c
     if project.directories_content:
         try:
             directories = json.loads(project.directories_content)
+            original_dump = json.dumps(directories, ensure_ascii=False, sort_keys=True)
+            ensure_directory_numbering(directories)
+            normalized_dump = json.dumps(directories, ensure_ascii=False, sort_keys=True)
+            if normalized_dump != original_dump:
+                project.directories_content = json.dumps(directories, ensure_ascii=False)
+                db.commit()
             return {"directories": directories}
         except json.JSONDecodeError:
             pass
@@ -742,26 +939,10 @@ def get_directory_source_content(project_id: str, node_title: str, current_user:
     content_text = project.tender_content
 
     # 1. 定位“投标文件格式”大章节
-    format_chapter_pos = 0
-    format_chapter_end = len(content_text)
-    
-    # 匹配可能的章节标题，如 "第八章 投标文件格式", "第六章 投标文件相关格式", 或单独的 "投标文件格式"
-    # 同时匹配 "投标文件" 和 "格式"
-    format_match = re.search(r"(?m)^[ \t]*(?:第[一二三四五六七八九十百]+[章部分][ \t]+)?.*投标文件.*格式.*[ \t]*$", content_text)
-    if format_match:
-        format_chapter_pos = format_match.start()
-    else:
-        # 降级：如果找不到严格的标题行，尝试找全文中的"投标文件格式"
-        fallback_idx = content_text.find("投标文件格式")
-        if fallback_idx != -1:
-            format_chapter_pos = fallback_idx
-
-    if format_chapter_pos > 0:
-        # 寻找下一个大章节标题，作为本章节的结束
-        # 假设大章节格式为 "第X章" 或 "第X部分"
-        next_chapter_match = re.search(r"(?m)^[ \t]*第[一二三四五六七八九十百]+[章部分][ \t]+", content_text[format_chapter_pos + 10:])
-        if next_chapter_match:
-            format_chapter_end = format_chapter_pos + 10 + next_chapter_match.start()
+    format_chapter_pos, format_chapter_end, _ = get_format_chapter_info(content_text)
+    if format_chapter_pos < 0:
+        format_chapter_pos = 0
+        format_chapter_end = len(content_text)
 
     # 只在“投标文件格式”章节内查找对应的目录节点
     start = find_title_pos(content_text, title, format_chapter_pos, format_chapter_end)
@@ -828,6 +1009,77 @@ def get_directory_source_content(project_id: str, node_title: str, current_user:
         "document_url": document_url
     }
 
+class SmartFillRequest(BaseModel):
+    html_content: str
+    resources: list[dict]
+
+@router.post("/{project_id}/smart-fill")
+async def smart_fill_template(project_id: str, request: SmartFillRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    project = db.query(BusinessBidProject).filter(BusinessBidProject.id == project_id, BusinessBidProject.user_id == current_user.id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    openai_service = OpenAIService()
+    
+    # 构建资源文本
+    resources_text = "\n\n".join([f"【{r.get('title', '')}】\n{r.get('content', '')}" for r in request.resources])
+    
+    # 构建项目关键信息
+    project_info = ""
+    if project.elements_content:
+        try:
+            elements = json.loads(project.elements_content)
+            for category in elements:
+                if "占位符" in category.get("title", "") or "关键信息" in category.get("title", ""):
+                    project_info = json.dumps(category, ensure_ascii=False)
+                    break
+        except Exception:
+            pass
+
+    system_prompt = """你是一个智能的文档填充助手。你的任务是将提供的相关资料和项目关键信息，精准地填入给定的 HTML 模板中。
+核心要求：
+1. 保持原有 HTML 结构和格式绝对不变（特别是表格 <table>、加粗 <strong>、下划线 <u>、以及我预设的外层包裹 div 等）。
+2. 识别 HTML 中的下划线填空区（如 `____`）、括号（如 `（  ）`）、或者我设定的占位符（如 `{{PROJECT_NAME}}`）。
+3. 根据提供的资料内容，将相关信息填充到这些空白处，替换掉下划线或占位符。如果原本有下划线，填充后可以保留适量下划线或者直接填入文字，但不能破坏整体美观和结构。
+4. 如果提供的资料中没有可以对应填充的信息，则必须保留原有空白、下划线或占位符，绝对不要瞎编。
+5. 只返回处理后的完整 HTML 内容，不要包含 ```html 等任何 Markdown 标记。"""
+
+    user_prompt = f"""
+【项目关键信息与占位符映射】：
+{project_info}
+
+【可用于填充的资料】：
+{resources_text}
+
+【待填充的 HTML 模板】：
+{request.html_content}
+
+请输出填充后的 HTML 模板内容：
+"""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+
+    try:
+        logger.info(f"Starting smart fill for project {project_id}")
+        response_text = ""
+        async for chunk in openai_service.stream_chat_completion(messages, temperature=0.1):
+            response_text += chunk
+            
+        cleaned_html = response_text.strip()
+        if cleaned_html.startswith("```html"):
+            cleaned_html = cleaned_html[7:]
+        if cleaned_html.endswith("```"):
+            cleaned_html = cleaned_html[:-3]
+            
+        logger.info(f"Smart fill completed for project {project_id}")
+        return {"success": True, "filled_content": cleaned_html.strip()}
+    except Exception as e:
+        logger.error(f"Smart fill failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 class BusinessProjectUpdate(BaseModel):
     status: str | None = None
     tender_document_name: str | None = None
@@ -850,15 +1102,12 @@ def update_business_project(project_id: str, data: BusinessProjectUpdate, curren
     if data.elements_content is not None:
         project.elements_content = data.elements_content
     if data.directories_content is not None:
-        if project.tender_content:
-            try:
-                directories = json.loads(data.directories_content)
-                extract_content_for_directories(directories, project)
-                project.directories_content = json.dumps(directories, ensure_ascii=False)
-            except Exception as e:
-                logger.error(f"Failed to extract content on PUT update: {e}")
-                project.directories_content = data.directories_content
-        else:
+        try:
+            directories = json.loads(data.directories_content)
+            ensure_directory_numbering(directories)
+            project.directories_content = json.dumps(directories, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Failed to process directories_content on PUT update: {e}")
             project.directories_content = data.directories_content
         
     db.commit()
@@ -984,3 +1233,386 @@ def match_business_resource(project_id: str, node_title: str, current_user: User
             
     # 如果没有匹配到任何数据，返回空列表
     return {"success": True, "results": results}
+
+
+@router.post("/{project_id}/verify-stream")
+async def verify_business_bid_stream(project_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    project = db.query(BusinessBidProject).filter(BusinessBidProject.id == project_id, BusinessBidProject.user_id == current_user.id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    config = config_manager.load_config()
+    if not config.get('api_key'):
+        raise HTTPException(status_code=400, detail="请先配置OpenAI API密钥")
+
+    openai_service = OpenAIService()
+
+    # 1. 组装待核验的数据
+    tender_text = project.tender_content or ""
+    directories_text = project.directories_content or ""
+    
+    # 获取公司信息
+    company_info = db.query(CompanyInfo).filter(CompanyInfo.user_id == current_user.id).first()
+    company_name = company_info.company_name if company_info else "未配置公司名称"
+
+    system_prompt = f"""你是一名资深的商务标审核专家。你的任务是对用户填写的商务标内容进行合规性和准确性核验。
+【核验原则】：
+1. 合规性优先：提取招标文件中的所有废标条款（如“未加盖公章废标”、“漏填保证金废标”），并在填充内容中寻找违规风险。
+2. 对“签字盖章”、“份数要求”、“装订要求”等硬性规定生成醒目的“待盖章项清单”提示。
+3. 信息精准性：项目名称、招标编号、投标截止时间等核心信息必须100%匹配。
+4. 检查公司名称拼写是否准确（本公司名称：{company_name}）。
+5. 检查金额单位是否统一（例如招标要求“万元”，实际填写“元”需指出）。
+
+请流式输出核验结果，每次发现一个问题或提示，就输出一个 JSON 对象。
+必须严格按以下 JSON 格式输出，不要包含 ```json 等任何 Markdown 标记：
+{{"type": "danger|warning|info", "category": "废标风险|盖章签字|信息校验|硬性要求", "message": "具体说明", "matched_text": "原文中的问题片段", "node_id": "对应目录节点的id（如果能推断出来）"}}
+
+注意：只输出合法的 JSON 对象，每个对象占一行，或者确保它们是独立的结构。为了流式解析方便，请在每个 JSON 对象后加一个换行符 `\\n`。"""
+
+    user_prompt = f"""
+【招标文件片段（用于提取要求）】：
+{tender_text[:30000]}...
+
+【已填写的商务标内容】：
+{directories_text[:50000]}...
+
+请开始核验：
+"""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+
+    async def generate():
+        try:
+            buffer = ""
+            async for chunk in openai_service.stream_chat_completion(messages, temperature=0.1):
+                buffer += chunk
+                # 尝试逐行解析 JSON
+                lines = buffer.split('\n')
+                if len(lines) > 1:
+                    for line in lines[:-1]:
+                        line = line.strip()
+                        if line:
+                            try:
+                                # 去除可能包含的逗号
+                                if line.endswith(','):
+                                    line = line[:-1]
+                                parsed = json.loads(line)
+                                yield f"data: {json.dumps({'result': parsed}, ensure_ascii=False)}\n\n"
+                            except json.JSONDecodeError:
+                                pass
+                    buffer = lines[-1]
+            
+            # 处理最后一行
+            if buffer.strip():
+                try:
+                    line = buffer.strip()
+                    if line.endswith(','):
+                        line = line[:-1]
+                    parsed = json.loads(line)
+                    yield f"data: {json.dumps({'result': parsed}, ensure_ascii=False)}\n\n"
+                except json.JSONDecodeError:
+                    pass
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            logger.error(f"Error during AI verification: {e}")
+            yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+
+    return sse_response(generate())
+
+
+from docx.shared import Pt, Inches, Cm
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.section import WD_ORIENT
+from docx.oxml.ns import qn
+import io
+import re
+import base64
+from urllib.request import urlopen
+from fastapi.responses import StreamingResponse
+from urllib.parse import quote
+from ..models.schemas import WordExportRequest
+
+def set_run_font_simsun(run) -> None:
+    run.font.name = "宋体"
+    r = run._element.rPr
+    if r is not None and r.rFonts is not None:
+        r.rFonts.set(qn("w:eastAsia"), "宋体")
+
+@router.post("/{project_id}/export-docx")
+def export_business_docx(project_id: str, request: WordExportRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    project = db.query(BusinessBidProject).filter(BusinessBidProject.id == project_id, BusinessBidProject.user_id == current_user.id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    company_info = db.query(CompanyInfo).filter(CompanyInfo.user_id == current_user.id).first()
+    company_name = company_info.company_name if company_info else "投标人全称"
+
+    try:
+        doc = docx.Document()
+        
+        # 1. 页面设置 (A4, 边距上2.5下2.5左2.0右2.0)
+        section = doc.sections[0]
+        section.page_height = docx.shared.Mm(297)
+        section.page_width = docx.shared.Mm(210)
+        section.top_margin = docx.shared.Cm(2.5)
+        section.bottom_margin = docx.shared.Cm(2.5)
+        section.left_margin = docx.shared.Cm(2.0)
+        section.right_margin = docx.shared.Cm(2.0)
+
+        # 2. 字体与行距基础设置
+        styles = doc.styles
+        normal_style = styles['Normal']
+        normal_font = normal_style.font
+        normal_font.name = "宋体"
+        normal_font.size = Pt(12)  # 小四号
+        if normal_style._element.rPr is None:
+            normal_style._element._add_rPr()
+        normal_style._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+        
+        normal_format = normal_style.paragraph_format
+        normal_format.line_spacing_rule = docx.enum.text.WD_LINE_SPACING.EXACTLY
+        normal_format.line_spacing = Pt(22)  # 固定值20-22pt
+        
+        # 3. 封面
+        for _ in range(5):
+            doc.add_paragraph()
+        
+        title_p = doc.add_paragraph()
+        title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        title_run = title_p.add_run(f"{project.project_name} 商务投标书")
+        title_run.font.name = "黑体"
+        title_run.font.size = Pt(26) # 一号字
+        title_run.bold = True
+        title_run._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
+        
+        for _ in range(15):
+            doc.add_paragraph()
+            
+        company_p = doc.add_paragraph()
+        company_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        company_run = company_p.add_run(f"投标人：{company_name}")
+        company_run.font.name = "黑体"
+        company_run.font.size = Pt(15) # 小三号字
+        company_run._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
+        
+        date_p = doc.add_paragraph()
+        date_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        import datetime
+        date_str = datetime.datetime.now().strftime("%Y年%m月%d日")
+        date_run = date_p.add_run(f"日期：{date_str}")
+        date_run.font.name = "宋体"
+        date_run.font.size = Pt(15) # 小三号字
+        date_run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+        
+        doc.add_page_break()
+
+        # 4. 页眉页脚设置
+        header = section.header
+        header_p = header.paragraphs[0]
+        header_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        header_run = header_p.add_run(f"{project.project_name} 商务投标书 {company_name}")
+        header_run.font.name = "宋体"
+        header_run.font.size = Pt(9) # 小五号
+        header_run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+
+        footer = section.footer
+        footer_p = footer.paragraphs[0]
+        footer_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        footer_run = footer_p.add_run("投标书正文")
+        footer_run.font.name = "宋体"
+        footer_run.font.size = Pt(9)
+        footer_run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+
+        # 5. Markdown 解析逻辑
+        def add_markdown_runs(para, text: str):
+            pattern = r"(\*\*.*?\*\*|\*.*?\*|`.*?`|!\[.*?\]\(.*?\))"
+            parts = re.split(pattern, text)
+            for part in parts:
+                if not part: continue
+                run = para.add_run()
+                if part.startswith("![") and "](" in part and part.endswith(")"):
+                    try:
+                        m = re.match(r"!\[(.*?)\]\((.*?)\)", part)
+                        if m:
+                            alt_text, img_url = m.groups()
+                            img_stream = None
+                            if img_url.startswith("data:image"):
+                                header, encoded = img_url.split(",", 1)
+                                img_stream = io.BytesIO(base64.b64decode(encoded))
+                            elif img_url.startswith("http"):
+                                response = urlopen(img_url, timeout=5)
+                                img_stream = io.BytesIO(response.read())
+                            if img_stream:
+                                run.add_picture(img_stream, width=Inches(6))
+                                continue
+                    except Exception: pass
+                if part.startswith("**") and part.endswith("**") and len(part) > 4:
+                    run.text = part[2:-2]
+                    run.bold = True
+                elif part.startswith("*") and part.endswith("*") and len(part) > 2:
+                    run.text = part[1:-1]
+                    run.italic = True
+                elif part.startswith("`") and part.endswith("`") and len(part) > 2:
+                    run.text = part[1:-1]
+                else:
+                    run.text = part
+                set_run_font_simsun(run)
+
+        def parse_markdown_blocks(content: str):
+            blocks = []
+            lines = content.split("\n")
+            i = 0
+            while i < len(lines):
+                line = lines[i].rstrip("\r").strip()
+                if not line:
+                    i += 1
+                    continue
+                if line.startswith("- ") or line.startswith("* ") or re.match(r"^\d+\.\s", line):
+                    items = []
+                    while i < len(lines):
+                        raw = lines[i].rstrip("\r")
+                        stripped = raw.strip()
+                        if stripped.startswith("- ") or stripped.startswith("* "):
+                            text = re.sub(r"^[-*]\s+", "", stripped).strip()
+                            if text: items.append(("unordered", None, text))
+                            i += 1
+                            continue
+                        m_num = re.match(r"^(\d+)\.\s+(.*)$", stripped)
+                        if m_num:
+                            num_str, text = m_num.groups()
+                            if text.strip(): items.append(("ordered", num_str, text.strip()))
+                            i += 1
+                            continue
+                        break
+                    if items: blocks.append(("list", items))
+                    continue
+                if "|" in line:
+                    rows = []
+                    while i < len(lines):
+                        raw = lines[i].rstrip("\r")
+                        stripped = raw.strip()
+                        if "|" in stripped:
+                            if not re.match(r"^\|?[-\s\|]+\|?$", stripped):
+                                cells = [c.strip() for c in stripped.split("|")]
+                                if cells and not cells[0]: cells.pop(0)
+                                if cells and not cells[-1]: cells.pop()
+                                if cells: rows.append(cells)
+                            i += 1
+                        else: break
+                    if rows: blocks.append(("table", rows))
+                    continue
+                if line.startswith("#"):
+                    m = re.match(r"^(#+)\s*(.*)$", line)
+                    if m:
+                        level_marks, title_text = m.groups()
+                        blocks.append(("heading", min(len(level_marks), 3), title_text.strip()))
+                    i += 1
+                    continue
+                para_lines = []
+                while i < len(lines):
+                    raw = lines[i].rstrip("\r")
+                    stripped = raw.strip()
+                    if stripped and not stripped.startswith("-") and not stripped.startswith("*") and "|" not in stripped and not stripped.startswith("#"):
+                        para_lines.append(stripped)
+                        i += 1
+                    else: break
+                if para_lines:
+                    blocks.append(("paragraph", " ".join(para_lines)))
+                else: i += 1
+            return blocks
+
+        def render_markdown_blocks(blocks):
+            for block in blocks:
+                kind = block[0]
+                if kind == "list":
+                    for item_kind, num_str, text in block[1]:
+                        p = doc.add_paragraph()
+                        run = p.add_run("• " if item_kind == "unordered" else f"{num_str}. ")
+                        set_run_font_simsun(run)
+                        add_markdown_runs(p, text)
+                elif kind == "table":
+                    rows = block[1]
+                    if rows:
+                        max_cols = max(len(r) for r in rows)
+                        if max_cols > 0:
+                            table = doc.add_table(rows=len(rows), cols=max_cols)
+                            table.style = 'Table Grid'
+                            for i, row in enumerate(rows):
+                                for j, cell_text in enumerate(row):
+                                    if j < max_cols:
+                                        cell = table.cell(i, j)
+                                        p = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
+                                        add_markdown_runs(p, cell_text)
+                            doc.add_paragraph()
+                elif kind == "heading":
+                    _, level, text = block
+                    heading = doc.add_heading(text, level=level)
+                    heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                    for hr in heading.runs: set_run_font_simsun(hr)
+                elif kind == "paragraph":
+                    p = doc.add_paragraph()
+                    p.paragraph_format.first_line_indent = docx.shared.Cm(0.74)
+                    add_markdown_runs(p, block[1])
+
+        # 正文写入
+        def write_nodes(items, depth=1):
+            if not isinstance(items, list):
+                return
+            for item in items:
+                title = item.title if hasattr(item, 'title') else item.get('title', '')
+                content = item.content if hasattr(item, 'content') else item.get('content', '')
+                
+                # 写入标题
+                p = doc.add_paragraph()
+                run = p.add_run(title)
+                if depth == 1:
+                    run.font.name = "黑体"
+                    run.font.size = Pt(22)
+                    run.bold = True
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    run._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
+                elif depth == 2:
+                    run.font.name = "黑体"
+                    run.font.size = Pt(16)
+                    run.bold = True
+                    run._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
+                elif depth == 3:
+                    run.font.name = "楷体"
+                    run.font.size = Pt(14)
+                    run._element.rPr.rFonts.set(qn("w:eastAsia"), "楷体")
+                else:
+                    run.font.name = "宋体"
+                    run.font.size = Pt(12)
+                    run.bold = True
+                    run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+                    
+                if content:
+                    blocks = parse_markdown_blocks(content)
+                    render_markdown_blocks(blocks)
+                
+                children = item.children if hasattr(item, 'children') else item.get('children', [])
+                if children:
+                    write_nodes(children, depth + 1)
+
+        write_nodes(request.outline)
+
+        buffer = io.BytesIO()
+        doc.save(buffer)
+        buffer.seek(0)
+
+        filename = f"{project.project_name or '商务标文件'}.docx"
+        encoded_filename = quote(filename)
+        content_disposition = f"attachment; filename*=UTF-8''{encoded_filename}"
+        headers = {"Content-Disposition": content_disposition}
+
+        return StreamingResponse(
+            buffer,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers=headers
+        )
+    except Exception as e:
+        logger.error(f"Failed to export docx: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

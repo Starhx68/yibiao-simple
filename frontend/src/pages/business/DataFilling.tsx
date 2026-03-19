@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import '@wangeditor/editor/dist/css/style.css';
 import { Editor, Toolbar } from '@wangeditor/editor-for-react';
 import { IDomEditor, IEditorConfig, IToolbarConfig } from '@wangeditor/editor';
@@ -13,6 +13,37 @@ const turndownService = new TurndownService({
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const turndownPluginGfm = require('turndown-plugin-gfm');
 turndownService.use(turndownPluginGfm.tables);
+
+// WangEditor 5 strictly filters HTML tags. It does not support <div> by default.
+// We must unwrap <div> tags (like the template-region from backend) so inner <p> and <table> are kept.
+const sanitizeHtmlForEditor = (html: string) => {
+  if (!html || typeof html !== 'string') return html;
+  
+  // Try to clean up mammoth HTML for WangEditor.
+  // WangEditor might strip some tags or complain if things are too deeply nested in unrecognized tags.
+  // 1. We keep standard tags.
+  // 2. We remove <a> tags if they are just empty anchors used for ToC
+  html = html.replace(/<a id="[^"]+"><\/a>/g, '');
+  
+  if (!html.includes('<div')) return html;
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    const divs = Array.from(doc.querySelectorAll('div'));
+    divs.forEach(div => {
+      const fragment = document.createDocumentFragment();
+      while (div.firstChild) {
+        fragment.appendChild(div.firstChild);
+      }
+      if (div.parentNode) {
+        div.parentNode.replaceChild(fragment, div);
+      }
+    });
+    return doc.body.innerHTML;
+  } catch (e) {
+    return html;
+  }
+};
 
 interface Props {
   projectId: string | null;
@@ -39,15 +70,177 @@ interface NodeData {
   selectedResources: ResourceItem[];
 }
 
+const stripChapterPrefix = (title: string) => {
+  let cleaned = (title || '').trim();
+  cleaned = cleaned.replace(/^\s*第[一二三四五六七八九十百千零〇两\d]+[章节部分篇卷][\s、.．:：-]*/, '');
+  cleaned = cleaned.replace(/^\s*[（(]?\d+[）)](?:\.\d+)*[、.．:：-]?\s*/, '');
+  cleaned = cleaned.replace(/^\s*\d+(?:\.\d+)*[、.．:：-]?\s*/, '');
+  cleaned = cleaned.replace(/^\s*[一二三四五六七八九十百千零〇两]+[、.．:：-]\s*/, '');
+  cleaned = cleaned.replace(/^\s*[（(][一二三四五六七八九十百千零〇两]+[）)][、.．:：-]?\s*/, '');
+  return cleaned.trim();
+};
+
+const toChineseNumeral = (num: number): string => {
+  const digits = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+  if (num <= 10) return num === 10 ? '十' : digits[num];
+  if (num < 20) return `十${digits[num - 10]}`;
+  if (num < 100) {
+    const tens = Math.floor(num / 10);
+    const units = num % 10;
+    return units === 0 ? `${digits[tens]}十` : `${digits[tens]}十${digits[units]}`;
+  }
+  return `${num}`;
+};
+
+const buildChapterPrefix = (pathIndexes: number[]) => {
+  const depth = pathIndexes.length - 1;
+  const current = pathIndexes[pathIndexes.length - 1];
+  if (depth === 0) return `${toChineseNumeral(current)}、`;
+  if (depth === 1) return `${current}.`;
+  if (depth === 2) return `${pathIndexes[1]}.${current}`;
+  return `(${current})`;
+};
+
+const ensureDirectoryNumbering = (directories: OutlineNode[]): OutlineNode[] => {
+  const cloned = JSON.parse(JSON.stringify(directories || [])) as OutlineNode[];
+  const walk = (nodes: OutlineNode[], pathIndexes: number[]) => {
+    if (!Array.isArray(nodes)) return;
+    nodes.forEach((node, index) => {
+      const currentPath = [...pathIndexes, index + 1];
+      const baseTitle = stripChapterPrefix(node.title || '') || (node.title || '').trim();
+      node.title = `${buildChapterPrefix(currentPath)} ${baseTitle}`.trim();
+      if (Array.isArray(node.children) && node.children.length > 0) {
+        walk(node.children, currentPath);
+      }
+    });
+  };
+  walk(cloned, []);
+  return cloned;
+};
+
 const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
   const [outline, setOutline] = useState<OutlineNode[]>([]);
   const [selectedNode, setSelectedNode] = useState<OutlineNode | null>(null);
   const [nodeDataMap, setNodeDataMap] = useState<Record<string, NodeData>>({});
   const [matchingResources, setMatchingResources] = useState<ResourceItem[]>([]);
   const [isLoadingResource, setIsLoadingResource] = useState(false);
+  const [isSmartFilling, setIsSmartFilling] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
 
   // WangEditor instance
   const [editor, setEditor] = useState<IDomEditor | null>(null);
+
+  // Refs for auto-save on blur
+  const nodeDataMapRef = useRef(nodeDataMap);
+  const outlineRef = useRef(outline);
+  const projectIdRef = useRef(projectId);
+  const selectedNodeRef = useRef(selectedNode);
+
+  useEffect(() => {
+    nodeDataMapRef.current = nodeDataMap;
+  }, [nodeDataMap]);
+
+  useEffect(() => {
+    outlineRef.current = outline;
+  }, [outline]);
+
+  useEffect(() => {
+    projectIdRef.current = projectId;
+  }, [projectId]);
+
+  useEffect(() => {
+    selectedNodeRef.current = selectedNode;
+  }, [selectedNode]);
+
+  const autoSave = async () => {
+    const currentProjectId = projectIdRef.current;
+    if (!currentProjectId) return;
+
+    const currentOutline = outlineRef.current;
+    const currentDataMap = { ...nodeDataMapRef.current };
+    
+    // Grab absolute latest text from editor to avoid React state batching race conditions
+    if (editor && selectedNodeRef.current) {
+      currentDataMap[selectedNodeRef.current.id] = {
+        ...currentDataMap[selectedNodeRef.current.id],
+        text: editor.getHtml()
+      };
+    }
+
+    const newOutline = JSON.parse(JSON.stringify(currentOutline));
+    const updateNodeContent = (nodes: OutlineNode[]) => {
+      for (const node of nodes) {
+        if (currentDataMap[node.id] && currentDataMap[node.id].text !== undefined) {
+          let htmlToConvert = currentDataMap[node.id].text;
+          
+          // Pre-process tables for turndown to ensure proper Markdown conversion
+          try {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(htmlToConvert, 'text/html');
+            const tables = Array.from(doc.querySelectorAll('table'));
+            tables.forEach(table => {
+              if (!table.querySelector('th')) {
+                const firstRow = table.querySelector('tr');
+                if (firstRow) {
+                  const tds = Array.from(firstRow.querySelectorAll('td'));
+                  tds.forEach(td => {
+                    const th = doc.createElement('th');
+                    th.innerHTML = td.innerHTML;
+                    Array.from(td.attributes).forEach(attr => th.setAttribute(attr.name, attr.value));
+                    td.parentNode?.replaceChild(th, td);
+                  });
+                  let thead = table.querySelector('thead');
+                  if (!thead) {
+                    thead = doc.createElement('thead');
+                    table.insertBefore(thead, table.firstChild);
+                    thead.appendChild(firstRow);
+                  }
+                }
+              }
+            });
+            htmlToConvert = doc.body.innerHTML;
+          } catch (e) {
+            // ignore
+          }
+          
+          try {
+            node.content = turndownService.turndown(htmlToConvert);
+          } catch (e) {
+            console.error('Turndown conversion failed', e);
+            node.content = htmlToConvert;
+          }
+        }
+        if (node.children) {
+          updateNodeContent(node.children);
+        }
+      }
+    };
+    updateNodeContent(newOutline);
+    const normalizedOutline = ensureDirectoryNumbering(newOutline);
+    setOutline(normalizedOutline); // <-- Add this to update local state too
+
+    try {
+      setSaveStatus('saving');
+      const token = localStorage.getItem('hxybs_token');
+      await fetch(`/api/business-bids/${currentProjectId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          directories_content: JSON.stringify(normalizedOutline)
+          // Intentionally omitting 'status: filled' to not alter workflow state unexpectedly during autosave
+        })
+      });
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus('idle'), 2000);
+      console.log('[DataFilling] Auto-saved successfully on blur');
+    } catch (e) {
+      console.error('[DataFilling] Failed to auto-save directories content', e);
+      setSaveStatus('idle');
+    }
+  };
 
   // Destroy editor on unmount
   useEffect(() => {
@@ -65,12 +258,21 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
       uploadImage: {
         base64LimitSize: 5 * 1024 * 1024 // 5MB
       }
+    },
+    onBlur: (editor: IDomEditor) => {
+      console.log('[DataFilling] Editor blurred, triggering auto-save');
+      autoSave();
     }
   };
 
   const handleEditorChange = (editor: IDomEditor) => {
     if (!selectedNode) return;
     const html = editor.getHtml();
+    
+    // Prevent infinite loop if the change was triggered by our own setNodeDataMap
+    // Also avoid overwriting with empty content if we just switched nodes
+    if (nodeDataMap[selectedNode.id]?.text === html) return;
+    
     setNodeDataMap(prev => ({
       ...prev,
       [selectedNode.id]: {
@@ -89,26 +291,55 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
 
   useEffect(() => {
     if (selectedNode && projectId) {
+      console.log(`[DataFilling] Node selected: ${selectedNode.title}, ID: ${selectedNode.id}`);
       fetchMatchingResources(selectedNode);
       
-      // Load content from node if empty
-      setNodeDataMap(prev => {
-                    const existing = prev[selectedNode.id] || { text: '', selectedResources: [] };
-                    if (!existing.text || existing.text.trim() === '') {
-                        const contentStr = selectedNode.content || '';
-                        let contentHtml = '';
-                        if (contentStr.trim().startsWith('<')) {
-                            contentHtml = contentStr;
-                        } else {
-                            contentHtml = contentStr ? contentStr.split('\n').map((line: string) => `<p>${line}</p>`).join('') : '';
-                        }
-                        return { ...prev, [selectedNode.id]: { ...existing, text: contentHtml } };
-                    }
-                    return prev;
-                });
+      // Force update the editor text when selectedNode changes
+      const existingData = nodeDataMap[selectedNode.id];
+      if (existingData && existingData.text !== undefined) {
+          console.log(`[DataFilling] Node already has data. Setting editor to existing text length: ${existingData.text.length}`);
+          console.log(`[DataFilling] Content preview:`, existingData.text.substring(0, 100));
+          if (editor) {
+             // Forcibly set the editor HTML to ensure it displays the content
+             try {
+               // Ignore if it's identical to prevent cursor jump
+               if (editor.getHtml() !== existingData.text) {
+                 editor.setHtml(existingData.text || '<p><br></p>');
+               }
+             } catch (e) {
+               console.error('[DataFilling] Error setting editor html:', e);
+             }
+          }
+      } else {
+          const contentStr = selectedNode.content || '';
+          console.log(`[DataFilling] Node has NO existing data in map. Using outline content. Length: ${contentStr.length}`);
+          let contentHtml = '';
+          if (contentStr.trim().startsWith('<')) {
+              contentHtml = sanitizeHtmlForEditor(contentStr);
+          } else {
+              contentHtml = contentStr ? contentStr.split('\n').map((line: string) => `<p>${line}</p>`).join('') : '';
+          }
+          console.log(`[DataFilling] Node content preview after sanitize:`, contentHtml.substring(0, 100));
+          
+          setNodeDataMap(prev => ({
+              ...prev,
+              [selectedNode.id]: {
+                  text: contentHtml,
+                  selectedResources: []
+              }
+          }));
+
+          if (editor) {
+             try {
+               editor.setHtml(contentHtml || '<p><br></p>');
+             } catch (e) {
+               console.error('[DataFilling] Error setting editor html:', e);
+             }
+          }
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedNode, projectId]);
+  }, [selectedNode, projectId, editor]);
 
   const fetchMatchingResources = async (node: OutlineNode) => {
     setIsLoadingResource(true);
@@ -125,21 +356,24 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
         if (data.results && data.results.length > 0) {
           setMatchingResources(data.results);
           
-          setNodeDataMap(prev => {
-            const existing = prev[node.id] || { text: '', selectedResources: [] };
-            if (data.results.length === 1 && existing.selectedResources.length === 0) {
-              const matchedRes = data.results[0];
-              return {
-                ...prev,
-                [node.id]: {
-                  ...existing,
-                  selectedResources: [matchedRes],
-                  text: existing.text ? existing.text : `【${matchedRes.title}】\n${matchedRes.content}\n\n`
-                }
-              };
+          const existing = nodeDataMapRef.current[node.id] || { text: '', selectedResources: [] };
+          if (data.results.length === 1 && existing.selectedResources.length === 0) {
+            const matchedRes = data.results[0];
+            const newText = existing.text ? existing.text : `【${matchedRes.title}】\n${matchedRes.content}\n\n`;
+            
+            if (editor && selectedNodeRef.current?.id === node.id) {
+              editor.setHtml(newText || '<p><br></p>');
             }
-            return prev;
-          });
+            
+            setNodeDataMap(prev => ({
+              ...prev,
+              [node.id]: {
+                ...(prev[node.id] || { text: '', selectedResources: [] }),
+                selectedResources: [matchedRes],
+                text: newText
+              }
+            }));
+          }
         }
       }
     } catch (error) {
@@ -152,52 +386,97 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
   const handleToggleResource = (res: ResourceItem) => {
     if (!selectedNode) return;
     const nodeId = selectedNode.id;
-    setNodeDataMap(prev => {
-      const existing = prev[nodeId] || { text: '', selectedResources: [] };
-      const isSelected = existing.selectedResources.some(r => r.id === res.id);
-      let newSelected;
-      let newText = existing.text || '';
-      
-      const resHtml = `<p><strong>【${res.title}】</strong></p><p>${res.content.replace(/\n/g, '<br/>')}</p><p><br/></p>`;
-      const resPlain = `【${res.title}】\n${res.content}\n\n`;
-      
-      if (isSelected) {
-        newSelected = existing.selectedResources.filter(r => r.id !== res.id);
-        // Try to remove both HTML and plain text versions
-        newText = newText.replace(resHtml, '').replace(resPlain, '');
+    
+    const existing = nodeDataMap[nodeId] || { text: '', selectedResources: [] };
+    const isSelected = existing.selectedResources.some(r => r.id === res.id);
+    let newSelected: ResourceItem[];
+    let newText = existing.text || '';
+    
+    const resHtml = `<p><strong>【${res.title}】</strong></p><p>${res.content.replace(/\n/g, '<br/>')}</p><p><br/></p>`;
+    const resPlain = `【${res.title}】\n${res.content}\n\n`;
+    
+    if (isSelected) {
+      newSelected = existing.selectedResources.filter(r => r.id !== res.id);
+      newText = newText.replace(resHtml, '').replace(resPlain, '');
+    } else {
+      newSelected = [...existing.selectedResources, res];
+      if (newText.includes('<p>') || newText.includes('<div>')) {
+        newText += resHtml;
       } else {
-        newSelected = [...existing.selectedResources, res];
-        // If it looks like HTML, append HTML, else append plain
-        if (newText.includes('<p>') || newText.includes('<div>')) {
-          newText += resHtml;
-        } else {
-          newText += resPlain;
-        }
+        newText += resPlain;
       }
-      
-      return {
-        ...prev,
-        [nodeId]: { ...existing, selectedResources: newSelected, text: newText }
-      };
-    });
+    }
+    
+    if (editor) {
+      editor.setHtml(newText || '<p><br></p>');
+    }
+    
+    setNodeDataMap(prev => ({
+      ...prev,
+      [nodeId]: { ...existing, selectedResources: newSelected, text: newText }
+    }));
   };
 
   const handleRemoveResource = (res: ResourceItem) => {
     if (!selectedNode) return;
     const nodeId = selectedNode.id;
-    setNodeDataMap(prev => {
-      const existing = prev[nodeId] || { text: '', selectedResources: [] };
-      const newSelected = existing.selectedResources.filter(r => r.id !== res.id);
-      
-      const resHtml = `<p><strong>【${res.title}】</strong></p><p>${res.content.replace(/\n/g, '<br/>')}</p><p><br/></p>`;
-      const resPlain = `【${res.title}】\n${res.content}\n\n`;
-      const newText = (existing.text || '').replace(resHtml, '').replace(resPlain, '');
-      
-      return {
-        ...prev,
-        [nodeId]: { ...existing, selectedResources: newSelected, text: newText }
-      };
-    });
+    const existing = nodeDataMap[nodeId] || { text: '', selectedResources: [] };
+    const newSelected = existing.selectedResources.filter(r => r.id !== res.id);
+    
+    const resHtml = `<p><strong>【${res.title}】</strong></p><p>${res.content.replace(/\n/g, '<br/>')}</p><p><br/></p>`;
+    const resPlain = `【${res.title}】\n${res.content}\n\n`;
+    const newText = (existing.text || '').replace(resHtml, '').replace(resPlain, '');
+    
+    if (editor) {
+      editor.setHtml(newText || '<p><br></p>');
+    }
+    
+    setNodeDataMap(prev => ({
+      ...prev,
+      [nodeId]: { ...existing, selectedResources: newSelected, text: newText }
+    }));
+  };
+
+  const handleSmartFill = async () => {
+    if (!selectedNode) return;
+    const nodeId = selectedNode.id;
+    const currentData = nodeDataMap[nodeId];
+    if (!currentData || !currentData.text) return;
+
+    setIsSmartFilling(true);
+    try {
+      const token = localStorage.getItem('hxybs_token');
+      const res = await fetch(`/api/business-bids/${projectId}/smart-fill`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          html_content: currentData.text,
+          resources: currentData.selectedResources
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.filled_content) {
+          if (editor) {
+            editor.setHtml(data.filled_content || '<p><br></p>');
+          }
+          setNodeDataMap(prev => ({
+            ...prev,
+            [nodeId]: { ...currentData, text: data.filled_content }
+          }));
+        }
+      } else {
+        console.error('Smart fill failed');
+      }
+    } catch (error) {
+      console.error('Smart fill request error', error);
+    } finally {
+      setIsSmartFilling(false);
+    }
   };
 
 
@@ -212,24 +491,53 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
       if (res.ok) {
         const data = await res.json();
         if (data.directories && data.directories.length > 0) {
-          setOutline(data.directories);
+          const normalizedDirectories = ensureDirectoryNumbering(data.directories as OutlineNode[]);
+          setOutline(normalizedDirectories);
           
           // 初始化 nodeDataMap
           const initialMap: Record<string, NodeData> = {};
           const initNodeData = async (nodes: OutlineNode[]) => {
             for (const node of nodes) {
               if (node.content) {
-                // node.content from backend is markdown, we convert it to HTML for WangEditor
-                const htmlContent = await marked.parse(node.content);
+                console.log(`[DataFilling] Init node data for ${node.id} (${node.title}). Content starts with:`, node.content.substring(0, 20));
+                // node.content from backend is HTML now (or markdown fallback), check before parsing
+                let htmlContent = node.content;
+                if (!node.content.trim().startsWith('<')) {
+                  htmlContent = await marked.parse(node.content);
+                } else {
+                  htmlContent = sanitizeHtmlForEditor(htmlContent);
+                }
                 initialMap[node.id] = { text: htmlContent, selectedResources: [] };
+              } else {
+                 initialMap[node.id] = { text: '', selectedResources: [] };
               }
               if (node.children) {
                 await initNodeData(node.children);
               }
             }
           };
-          await initNodeData(data.directories);
-          setNodeDataMap(prev => ({ ...initialMap, ...prev }));
+          await initNodeData(normalizedDirectories);
+          console.log('[DataFilling] Initial map generated, keys:', Object.keys(initialMap).length);
+          setNodeDataMap(prev => {
+             // To prevent existing selected resources or edits from being wiped if we re-fetch,
+             // we merge, but prefer initialMap for empty ones. Actually, if we just fetched,
+             // it's better to use initialMap and only keep selectedResources from prev if any.
+             const merged = { ...initialMap };
+             for (const key in prev) {
+                 if (merged[key]) {
+                     merged[key].selectedResources = prev[key].selectedResources;
+                     // Only overwrite text if prev actually has text and initialMap has none?
+                     // No, if user edited, we should probably keep user edits, but fetchDirectories 
+                     // usually runs once on mount.
+                     if (prev[key].text) {
+                         merged[key].text = prev[key].text;
+                     }
+                 } else {
+                     merged[key] = prev[key];
+                 }
+             }
+             return merged;
+          });
 
           // 默认选中第一个没有子节点的节点
           let firstLeaf: OutlineNode | null = null;
@@ -245,7 +553,7 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
               if (firstLeaf) return;
             }
           };
-          findLeaf(data.directories);
+          findLeaf(normalizedDirectories);
           if (firstLeaf) setSelectedNode(firstLeaf);
         }
       }
@@ -279,11 +587,56 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
   const handleNext = async () => {
     // 将 nodeDataMap 中的内容保存到 outline 中
     const newOutline = JSON.parse(JSON.stringify(outline));
+    const currentDataMap = { ...nodeDataMap };
+    
+    // Grab absolute latest text from editor to avoid React state batching race conditions
+    if (editor && selectedNode) {
+      currentDataMap[selectedNode.id] = {
+        ...currentDataMap[selectedNode.id],
+        text: editor.getHtml()
+      };
+    }
+
     const updateNodeContent = (nodes: OutlineNode[]) => {
       for (const node of nodes) {
-        if (nodeDataMap[node.id] && nodeDataMap[node.id].text) {
-          // nodeDataMap[node.id].text is HTML from WangEditor, convert back to Markdown for backend
-          node.content = turndownService.turndown(nodeDataMap[node.id].text);
+        if (currentDataMap[node.id] && currentDataMap[node.id].text !== undefined) {
+          let htmlToConvert = currentDataMap[node.id].text;
+          
+          try {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(htmlToConvert, 'text/html');
+            const tables = Array.from(doc.querySelectorAll('table'));
+            tables.forEach(table => {
+              if (!table.querySelector('th')) {
+                const firstRow = table.querySelector('tr');
+                if (firstRow) {
+                  const tds = Array.from(firstRow.querySelectorAll('td'));
+                  tds.forEach(td => {
+                    const th = doc.createElement('th');
+                    th.innerHTML = td.innerHTML;
+                    Array.from(td.attributes).forEach(attr => th.setAttribute(attr.name, attr.value));
+                    td.parentNode?.replaceChild(th, td);
+                  });
+                  let thead = table.querySelector('thead');
+                  if (!thead) {
+                    thead = doc.createElement('thead');
+                    table.insertBefore(thead, table.firstChild);
+                    thead.appendChild(firstRow);
+                  }
+                }
+              }
+            });
+            htmlToConvert = doc.body.innerHTML;
+          } catch (e) {
+            // ignore
+          }
+          
+          try {
+            node.content = turndownService.turndown(htmlToConvert);
+          } catch (e) {
+            console.error('Turndown conversion failed', e);
+            node.content = htmlToConvert;
+          }
         }
         if (node.children) {
           updateNodeContent(node.children);
@@ -291,6 +644,7 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
       }
     };
     updateNodeContent(newOutline);
+    const normalizedOutline = ensureDirectoryNumbering(newOutline);
 
     try {
       const token = localStorage.getItem('hxybs_token');
@@ -301,7 +655,7 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          directories_content: JSON.stringify(newOutline),
+          directories_content: JSON.stringify(normalizedOutline),
           status: 'filled'
         })
       });
@@ -386,13 +740,27 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
                 </div>
               ) : (
                 <div className="bg-gray-50 border-l-4 border-gray-400 p-4 mb-6 text-sm text-gray-600 rounded-r">
-                  未从资料库找到【{selectedNode.title}】的匹配项，请手动填写。
+                  未从资料库找到【{selectedNode.title}】的匹配项，请直接在下方原样模板中手动填写。
                 </div>
               )}
 
               {/* 文本框区 */}
               <div className="flex-1 flex flex-col gap-2 min-h-[400px]">
-                <label className="text-sm font-medium text-gray-700 border-l-4 border-green-500 pl-2">目录内容（支持富文本编辑，可原样保持格式）</label>
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-3">
+                    <label className="text-sm font-medium text-gray-700 border-l-4 border-green-500 pl-2">目录内容（支持富文本编辑，可原样保持格式）</label>
+                    {saveStatus === 'saving' && <span className="text-xs text-gray-400">保存中...</span>}
+                    {saveStatus === 'saved' && <span className="text-xs text-green-500">已自动保存</span>}
+                  </div>
+                  <button
+                    onClick={handleSmartFill}
+                    disabled={isSmartFilling}
+                    className={`px-3 py-1.5 text-sm text-white rounded-md flex items-center gap-1 ${isSmartFilling ? 'bg-indigo-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 shadow-sm'}`}
+                  >
+                    {isSmartFilling && <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></div>}
+                    AI智能格式填充
+                  </button>
+                </div>
                 <div style={{ border: '1px solid #ccc', zIndex: 100 }} className="flex-1 flex flex-col">
                   <Toolbar
                     editor={editor}
@@ -402,7 +770,6 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
                   />
                   <Editor
                     defaultConfig={editorConfig}
-                    value={nodeDataMap[selectedNode.id]?.text || ''}
                     onCreated={setEditor}
                     onChange={handleEditorChange}
                     mode="default"
@@ -423,7 +790,7 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
           onClick={handleNext}
           className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
         >
-          下一步：AI 撰写与导出
+          下一步：AI 核验与导出
         </button>
       </div>
     </div>
