@@ -294,25 +294,6 @@ const DataFilling: React.FC<Props> = ({ projectId, onNext }) => {
         const data = await res.json();
         if (data.results && data.results.length > 0) {
           setMatchingResources(data.results);
-          
-          const existing = nodeDataMapRef.current[node.id] || { text: '', selectedResources: [] };
-          if (data.results.length === 1 && existing.selectedResources.length === 0) {
-            const matchedRes = data.results[0];
-            const newText = existing.text ? existing.text : `【${matchedRes.title}】\n${matchedRes.content}\n\n`;
-            
-            if (editor && selectedNodeRef.current?.id === node.id) {
-              editor.setHtml(newText || '<p><br></p>');
-            }
-            
-            setNodeDataMap(prev => ({
-              ...prev,
-              [node.id]: {
-                ...(prev[node.id] || { text: '', selectedResources: [] }),
-                selectedResources: [matchedRes],
-                text: newText
-              }
-            }));
-          }
         }
       }
     } catch (error) {

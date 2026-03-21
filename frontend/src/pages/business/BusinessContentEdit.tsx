@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { marked } from 'marked';
 import '@wangeditor/editor/dist/css/style.css';
 import { Editor, Toolbar } from '@wangeditor/editor-for-react';
@@ -248,6 +248,20 @@ const BusinessContentEdit: React.FC<Props> = ({ projectId }) => {
       // Sync editor content back to outline before export
       let exportOutline = JSON.parse(JSON.stringify(outline));
       if (editor) {
+        const flattenNodeIds = (nodes: OutlineNode[]): string[] => {
+          const result: string[] = [];
+          const walk = (list: OutlineNode[]) => {
+            for (const node of list) {
+              result.push(node.id);
+              if (node.children && node.children.length > 0) {
+                walk(node.children);
+              }
+            }
+          };
+          walk(nodes);
+          return result;
+        };
+
         const currentHtml = editor.getHtml();
         const parser = new DOMParser();
         const doc = parser.parseFromString(currentHtml, 'text/html');
@@ -276,16 +290,21 @@ const BusinessContentEdit: React.FC<Props> = ({ projectId }) => {
           }
         });
 
-        const sections = Array.from(doc.querySelectorAll('h2[id^="node-"]'));
+        const sections = Array.from(doc.querySelectorAll('h2'));
         
         const contentMap: Record<string, string> = {};
+        const orderedNodeIds = flattenNodeIds(exportOutline);
+        const validNodeIds = new Set(orderedNodeIds);
         
         sections.forEach((h2, index) => {
-          const nodeId = h2.id.replace('node-', '');
+          const rawId = h2.id?.startsWith('node-') ? h2.id.replace('node-', '') : '';
+          const nodeId = rawId && validNodeIds.has(rawId) ? rawId : orderedNodeIds[index];
+          if (!nodeId) return;
+
           let sectionHtml = '';
           let nextNode = h2.nextSibling;
           
-          while (nextNode && (nextNode.nodeName.toLowerCase() !== 'h2' || !(nextNode as Element).id.startsWith('node-'))) {
+          while (nextNode && nextNode.nodeName.toLowerCase() !== 'h2') {
             if (nextNode.nodeType === Node.ELEMENT_NODE) {
               sectionHtml += (nextNode as Element).outerHTML;
             } else if (nextNode.nodeType === Node.TEXT_NODE) {

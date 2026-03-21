@@ -268,6 +268,38 @@ const BusinessOutlineEdit: React.FC<Props> = ({ projectId, onNext }) => {
     }
   };
 
+  const clearDirectoriesBeforeRegenerate = async () => {
+    if (!projectId) return;
+    const token = localStorage.getItem('hxybs_token');
+    await fetch(`/api/business-bids/${projectId}`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ directories_content: '[]' })
+    });
+  };
+
+  const handleRegenerate = async () => {
+    if (generating) return;
+    const confirmed = window.confirm('重新生成将清理当前已填写的投标书目录和全部内容，且无法还原。是否继续？');
+    if (!confirmed) return;
+
+    try {
+      await clearDirectoriesBeforeRegenerate();
+    } catch (e) {
+      console.error('Failed to clear old directories before regenerate', e);
+      alert('清理旧目录失败，已取消重新生成。');
+      return;
+    }
+
+    setOutline([]);
+    setSelectedNodeId(null);
+    setEditingNodeId(null);
+    await generateDirectories();
+  };
+
   const renderNode = (node: OutlineNode, level: number = 0) => {
     const isSelected = selectedNodeId === node.id;
     const isEditing = editingNodeId === node.id;
@@ -343,7 +375,7 @@ const BusinessOutlineEdit: React.FC<Props> = ({ projectId, onNext }) => {
         <h2 className="text-lg font-medium">商务标目录大纲</h2>
         <div className="flex gap-2">
           <button 
-            onClick={generateDirectories}
+            onClick={handleRegenerate}
             disabled={generating}
             className="px-3 py-1.5 text-sm border border-gray-300 text-gray-700 rounded hover:bg-gray-50 disabled:opacity-50"
           >
