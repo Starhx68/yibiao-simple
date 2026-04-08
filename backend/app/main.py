@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
 from .config import settings
-from .routers import config, document, outline, content, search, expand
+from .routers import config, document, outline, content, search, expand, rag
 from .routers import auth, resource, business_bid, technical_bid
 from . import database
 from .models.models import User
@@ -37,6 +37,7 @@ app.include_router(outline.router)
 app.include_router(content.router)
 app.include_router(search.router)
 app.include_router(expand.router)
+app.include_router(rag.router)
 app.include_router(auth.router)
 app.include_router(resource.router)
 app.include_router(business_bid.router)
@@ -45,6 +46,20 @@ app.include_router(technical_bid.router)
 @app.on_event("startup")
 async def startup_event():
     database.init_db()
+
+    # 在后台线程中预热RAG向量模型，不阻塞启动
+    import threading
+    def preload_embedding_model():
+        try:
+            from .services.embedding_service import get_embedding_service
+            embedding_service = get_embedding_service()
+            print(f"[RAG] 向量模型预热开始，模型: {embedding_service.model_name}")
+        except Exception as e:
+            print(f"[RAG] 向量模型预热失败: {e}")
+
+    preload_thread = threading.Thread(target=preload_embedding_model, daemon=True)
+    preload_thread.start()
+
     db = database.SessionLocal()
     try:
         admin = db.query(User).filter(User.username == "admin").first()

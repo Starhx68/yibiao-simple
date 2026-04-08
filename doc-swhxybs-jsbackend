@@ -1,0 +1,30 @@
+[1mdiff --git a/backend/app/services/file_service.py b/backend/app/services/file_service.py[m
+[1mindex 8e5a6aa..4499481 100644[m
+[1m--- a/backend/app/services/file_service.py[m
+[1m+++ b/backend/app/services/file_service.py[m
+[36m@@ -1,6 +1,7 @@[m
+ """文件处理服务"""[m
+ import aiofiles[m
+ import os[m
+[32m+[m[32mimport re[m
+ import time[m
+ import gc[m
+ import io[m
+[36m@@ -216,10 +217,16 @@[m [mclass FileService:[m
+ [m
+         # 生成带时间戳的文件名，防止重复[m
+         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # 精确到毫秒[m
+[31m-        filename = file.filename or "unknown_file"[m
+[32m+[m[32m        filename = os.path.basename(file.filename or "unknown_file")[m
+[32m+[m[32m        filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", filename)[m
+[32m+[m[32m        filename = re.sub(r"\s+", "_", filename).strip("._ ")[m
+[32m+[m[32m        if not filename:[m
+[32m+[m[32m            filename = "unknown_file"[m
+ [m
+         # 分离文件名和扩展名[m
+         name, ext = os.path.splitext(filename)[m
+[32m+[m[32m        if not name:[m
+[32m+[m[32m            name = "file"[m
+ [m
+         # 生成新的文件名：原文件名_时间戳.扩展名[m
+         new_filename = f"{name}_{timestamp}{ext}"[m

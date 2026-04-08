@@ -19,8 +19,21 @@ router = APIRouter(prefix="/api/auth", tags=["认证"])
 
 @router.post("/login", response_model=TokenResponse)
 def login(request: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == request.username).first()
-    if not user or not verify_password(request.password, user.password_hash):
+    print(f"[DEBUG] Login attempt for user: {request.username}")
+    users = db.query(User).filter(User.username == request.username).all()
+    user = next((item for item in users if item.username == request.username), None)
+    if not user:
+        print(f"[DEBUG] User not found")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户名或密码错误"
+        )
+
+    print(f"[DEBUG] User found, testing password verification")
+    password_valid = verify_password(request.password, user.password_hash)
+    print(f"[DEBUG] Password verification result: {password_valid}")
+
+    if not password_valid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户名或密码错误"
@@ -153,5 +166,18 @@ def batch_delete_users(
     
     db.query(User).filter(User.id.in_(user_ids)).delete(synchronize_session=False)
     db.commit()
-    
+
     return {"success": True, "message": "批量删除成功"}
+
+
+@router.get("/test-login")
+def test_login(db: Session = Depends(get_db)):
+    """测试登录端点"""
+    user = db.query(User).filter(User.username == "admin").first()
+    if user:
+        return {
+            "username": user.username,
+            "password_hash_prefix": user.password_hash[:20] + "...",
+            "test_verify": user.verify_password("admin$123")
+        }
+    return {"error": "User not found"}

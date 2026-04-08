@@ -87,6 +87,26 @@ class ChapterContentRequest(BaseModel):
     parent_chapters: Optional[List[Dict[str, Any]]] = Field(None, description="上级章节列表")
     sibling_chapters: Optional[List[Dict[str, Any]]] = Field(None, description="同级章节列表")
     project_overview: str = Field("", description="项目概述")
+    project_id: Optional[str] = Field(None, description="技术标项目ID")
+    use_rag: Optional[bool] = Field(False, description="是否启用RAG")
+    rag_top_k: Optional[int] = Field(5, description="RAG召回数量")
+    rag_similarity_threshold: Optional[float] = Field(0.6, description="RAG相似度阈值")
+    industry: Optional[str] = Field(None, description="行业筛选")
+    project_type: Optional[str] = Field(None, description="项目类型筛选")
+
+
+class RagLibraryUploadRequest(BaseModel):
+    library_name: Optional[str] = Field(None, description="资料库名称")
+    industry: Optional[str] = Field(None, description="行业")
+    project_type: Optional[str] = Field(None, description="项目类型")
+
+
+class RagSearchRequest(BaseModel):
+    query: str = Field(..., description="检索查询")
+    top_k: int = Field(5, description="返回条数")
+    industry: Optional[str] = Field(None, description="行业筛选")
+    project_type: Optional[str] = Field(None, description="项目类型筛选")
+    similarity_threshold: float = Field(0.25, description="相似度阈值")
 
 
 class ErrorResponse(BaseModel):

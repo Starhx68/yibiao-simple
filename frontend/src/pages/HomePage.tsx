@@ -18,6 +18,7 @@ const HomePage: React.FC = () => {
     { name: '商务标', icon: DocumentTextIcon, description: '商务标编写', path: '/business' },
     { name: '技术标', icon: DocumentTextIcon, description: '技术标编写', path: '/technical' },
     { name: '资料库管理', icon: FolderIcon, description: '公司信息 / 资质 / 人员 / 财务 / 业绩', path: '/resource/company' },
+    { name: 'RAG智能参考', icon: FolderIcon, description: '资料导入 / 向量库 / 检索参考', path: '/resource/rag' },
   ];
 
   useEffect(() => {
@@ -74,7 +75,7 @@ const HomePage: React.FC = () => {
     <div className="min-h-full p-6">
       <div className="max-w-6xl mx-auto">
         <h1 className="text-2xl font-semibold text-gray-900 mb-6">海新屹AI标书</h1>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 mb-10">
           {menuItems.map((item) => {
             const Icon = item.icon;
             return (

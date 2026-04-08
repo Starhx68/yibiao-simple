@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  # MySQL数据库服务
+  mysql:
+    image: mysql:8.0
+    container_name: bsdoc-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: hxybs
+      MYSQL_USER: hxybs
+      MYSQL_PASSWORD: hxybs
+      TZ: Asia/Shanghai
+    ports:
+      - "13306:3306"  # 使用13306端口避免Windows端口权限问题
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d  # 初始化SQL脚本
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone='+08:00'
+    networks:
+      - bsdoc-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis服务（可选，用于缓存）
+  redis:
+    image: redis:7-alpine
+    container_name: bsdoc-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"  # 使用6380端口避免冲突
+    volumes:
+      - redis_data:/data
+    networks:
+      - bsdoc-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO对象存储（可选，用于文件存储）
+  minio:
+    image: minio/minio:latest
+    container_name: bsdoc-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      TZ: Asia/Shanghai
+    ports:
+      - "9001:9000"   # API端口
+      - "9002:9001"   # 控制台端口
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - bsdoc-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+  minio_data:
+    driver: local
+
+networks:
+  bsdoc-network:
+    driver: bridge

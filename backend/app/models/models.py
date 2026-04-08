@@ -1,14 +1,16 @@
 """数据库模型定义"""
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, Date, DECIMAL
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, Date, DECIMAL, JSON, Float
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from ..database import Base
+
+# 直接使用 bcrypt
 import bcrypt
 
 
 class User(Base):
     __tablename__ = "users"
-    
+
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     username = Column(String(50), unique=True, index=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
@@ -19,12 +21,16 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-    
+
     def set_password(self, password: str):
         self.password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-    
+
     def verify_password(self, password: str) -> bool:
-        return bcrypt.checkpw(password.encode('utf-8'), self.password_hash.encode('utf-8'))
+        """验证密码，使用 bcrypt"""
+        try:
+            return bcrypt.checkpw(password.encode('utf-8'), self.password_hash.encode('utf-8'))
+        except Exception:
+            return False
 
 
 class CompanyInfo(Base):
@@ -250,5 +256,235 @@ class TechnicalBidProject(Base):
     project_overview = Column(Text(16777215)) # 项目概述
     tech_requirements = Column(Text(16777215)) # 技术要求
     outline_data = Column(Text(16777215)) # 目录结构及内容 JSON
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class TechnicalBidLibrary(Base):
+    __tablename__ = "technical_bid_library"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    library_name = Column(String(200), nullable=False)
+    library_type = Column(String(50), default="technical")
+    industry = Column(String(100))
+    project_type = Column(String(100))
+    industry_tags = Column(JSON)
+    project_type_tags = Column(JSON)
+    file_url = Column(String(500))
+    file_name = Column(String(200))
+    file_size = Column(Integer, default=0)
+    file_hash = Column(String(64))
+    file_format = Column(String(20))
+    total_pages = Column(Integer, default=0)
+    total_words = Column(Integer, default=0)
+    total_chapters = Column(Integer, default=0)
+    total_chunks = Column(Integer, default=0)
+    summary_chunks = Column(Integer, default=0)
+    status = Column(String(20), default="pending")
+    progress = Column(Float, default=0)
+    processed_chunks = Column(Integer, default=0)
+    error_msg = Column(Text)
+    processing_started_at = Column(DateTime)
+    processing_completed_at = Column(DateTime)
+    processing_duration = Column(Integer)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class RagIndustryCategory(Base):
+    __tablename__ = "rag_industry_categories"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    code = Column(String(20), nullable=False, index=True)
+    name = Column(String(100), nullable=False, index=True)
+    keywords = Column(JSON)
+    sort_order = Column(Integer, default=0, index=True)
+    enabled = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class RagProjectTypeCategory(Base):
+    __tablename__ = "rag_project_type_categories"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    code = Column(String(30), nullable=False, index=True)
+    name = Column(String(100), nullable=False, index=True)
+    keywords = Column(JSON)
+    sort_order = Column(Integer, default=0, index=True)
+    enabled = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class TechnicalBidChunk(Base):
+    __tablename__ = "technical_bid_chunks"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    library_id = Column(Integer, ForeignKey("technical_bid_library.id", ondelete="CASCADE"), nullable=False, index=True)
+    chunk_index = Column(Integer, nullable=False)
+    chunk_type = Column(String(20), default="content")
+    chapter_path = Column(String(500))
+    chapter_level = Column(Integer)
+    chapter_title = Column(String(200))
+    parent_chapter_path = Column(String(500))
+    chunk_content = Column(Text, nullable=False)
+    content_length = Column(Integer, default=0)
+    content_hash = Column(String(64))
+    vector_id = Column(String(100))
+    embedding_model = Column(String(100))
+    embedding_dimension = Column(Integer)
+    meta_json = Column("metadata", JSON)
+    is_summary_chunk = Column(Boolean, default=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class RagGenerationLog(Base):
+    __tablename__ = "rag_generation_log"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    project_id = Column(String(36), ForeignKey("technical_bid_projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    chapter_id = Column(String(100), index=True)
+    query_text = Column(Text)
+    query_embedding_model = Column(String(100))
+    retrieved_count = Column(Integer, default=0)
+    retrieved_chunks = Column(JSON)
+    used_rag = Column(Boolean, default=False)
+    rag_sources = Column(JSON)
+    llm_model = Column(String(100))
+    llm_response = Column(Text)
+    response_tokens = Column(Integer)
+    retrieval_time = Column(Integer)
+    generation_time = Column(Integer)
+    total_time = Column(Integer)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class RagRebuildTask(Base):
+    __tablename__ = "rag_rebuild_tasks"
+
+    task_id = Column(String(32), primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    library_id = Column(Integer, ForeignKey("technical_bid_library.id", ondelete="SET NULL"), nullable=True, index=True)
+    batch_size = Column(Integer, default=100)
+    status = Column(String(20), default="pending", index=True)
+    progress = Column(Float, default=0)
+    stage = Column(String(50), default="pending")
+    message = Column(String(255))
+    total_chunks = Column(Integer, default=0)
+    processed_chunks = Column(Integer, default=0)
+    failed_chunks = Column(Integer, default=0)
+    result = Column(JSON)
+    error = Column(Text)
+    started_at = Column(DateTime, server_default=func.now(), index=True)
+    finished_at = Column(DateTime)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), index=True)
+
+
+class TechnicalBidConstraint(Base):
+    __tablename__ = "technical_bid_constraints"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    project_id = Column(String(36), ForeignKey("technical_bid_projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    category = Column(String(100), nullable=False)
+    key_name = Column(String(100), nullable=False)
+    value = Column(Text, nullable=False)
+    is_mandatory = Column(Boolean, default=True)
+    source_chapter = Column(String(200))
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class TechnicalBidConsistencyCheck(Base):
+    __tablename__ = "technical_bid_consistency_checks"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    project_id = Column(String(36), ForeignKey("technical_bid_projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    chapter_id = Column(String(100), index=True)
+    check_type = Column(String(50), default="global")
+    check_result = Column(String(20), nullable=False, index=True)
+    severity = Column(String(20), default="medium", index=True)
+    violations = Column(JSON)
+    checked_at = Column(DateTime, server_default=func.now())
+    resolved_at = Column(DateTime)
+    resolved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
+class ChapterCitation(Base):
+    __tablename__ = "chapter_citations"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    project_id = Column(String(36), ForeignKey("technical_bid_projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    chapter_id = Column(String(100), nullable=False, index=True)
+    chapter_title = Column(String(200))
+    total_sentences = Column(Integer, default=0)
+    cited_sentences = Column(Integer, default=0)
+    citation_ratio = Column(Float, default=0)
+    risk_level = Column(String(20), default="low", index=True)
+    generated_at = Column(DateTime, server_default=func.now())
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class CitationSource(Base):
+    __tablename__ = "citation_sources"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    citation_id = Column(Integer, ForeignKey("chapter_citations.id", ondelete="CASCADE"), nullable=False, index=True)
+    library_id = Column(Integer, ForeignKey("technical_bid_library.id", ondelete="SET NULL"), nullable=True)
+    library_name = Column(String(200))
+    chapter_title = Column(String(200))
+    contribution = Column(Float, default=0)
+    sentences_count = Column(Integer, default=0)
+    similarity_avg = Column(Float, default=0)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class TechnicalBidImage(Base):
+    __tablename__ = "technical_bid_images"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    library_id = Column(Integer, ForeignKey("technical_bid_library.id", ondelete="CASCADE"), nullable=False, index=True)
+    chunk_id = Column(Integer, ForeignKey("technical_bid_chunks.id", ondelete="SET NULL"), nullable=True)
+    image_type = Column(String(50), index=True)
+    image_title = Column(String(200))
+    image_description = Column(Text)
+    original_url = Column(String(500))
+    thumbnail_url = Column(String(500))
+    file_format = Column(String(20))
+    file_size = Column(Integer)
+    width = Column(Integer)
+    height = Column(Integer)
+    embedding_model = Column(String(100))
+    image_vector_id = Column(String(100))
+    text_vector_id = Column(String(100))
+    ocr_text = Column(Text)
+    analysis_result = Column(JSON)
+    page_number = Column(Integer)
+    chapter_path = Column(String(500), index=True)
+    meta_json = Column("metadata", JSON)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class ImageModificationRecord(Base):
+    __tablename__ = "image_modification_records"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    project_id = Column(String(36), ForeignKey("technical_bid_projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_image_id = Column(Integer, ForeignKey("technical_bid_images.id", ondelete="SET NULL"), nullable=True, index=True)
+    modification_type = Column(String(50))
+    modification_reason = Column(Text)
+    original_description = Column(Text)
+    original_elements = Column(JSON)
+    modified_description = Column(Text)
+    modified_elements = Column(JSON)
+    modification_marks = Column(JSON)
+    status = Column(String(20), default="pending", index=True)
+    confirmed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    confirmed_at = Column(DateTime)
+    feedback = Column(Text)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

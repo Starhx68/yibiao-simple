@@ -4,10 +4,8 @@ export const getApiBaseUrl = (): string => {
     return fromEnv;
   }
 
-  const hostname = window.location.hostname || '127.0.0.1';
-
   if (process.env.NODE_ENV === 'development') {
-    return `http://${hostname}:18000`;
+    return '';
   }
 
   return window.location.origin;

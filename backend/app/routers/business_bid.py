@@ -298,72 +298,32 @@ def find_title_pos(text: str, search_title: str, start_pos: int = 0, end_pos: in
         return -1
     if end_pos == -1:
         end_pos = len(text)
-
+        
     search_text = text[start_pos:end_pos]
-
-    def heading_level(line_text: str) -> int:
-        t = (line_text or "").strip()
-        if not t:
-            return 99
-        if re.match(r"^\s*第[一二三四五六七八九十百千零〇两\d]+[章部分篇卷][\s、.．:：-]*", t):
-            return 1
-        if re.match(r"^\s*第[一二三四五六七八九十百千零〇两\d]+节[\s、.．:：-]*", t):
-            return 2
-        if re.match(r"^\s*第[一二三四五六七八九十百千零〇两\d]+[条款项][\s、.．:：-]*", t):
-            return 3
-        if re.match(r"^\s*\d+\.\d+\.\d+(?:\.\d+)*[、.．:：-]?\s*", t):
-            return 3
-        if re.match(r"^\s*\d+\.\d+(?:\.\d+)*[、.．:：-]?\s*", t):
-            return 2
-        if re.match(r"^\s*\d+[、.．:：-]\s*", t):
-            return 1
-        if re.match(r"^\s*[一二三四五六七八九十百千零〇两]+[、.．:：-]\s*", t):
-            return 1
-        if re.match(r"^\s*[（(]\d+[）)][、.．:：-]?\s*", t):
-            return 3
-        return 99
-
-    def normalized_match_text(value: str) -> str:
-        cleaned = _normalize_title_for_match(value)
-        cleaned = re.sub(r"\s+", "", cleaned)
-        return cleaned
-
-    title_level = heading_level(search_title)
-    core_title = _strip_chapter_prefix(search_title) or search_title
-    core_norm = normalized_match_text(core_title)
-
-    for m in re.finditer(r"(?m)^[^\n]+$", search_text):
-        line = m.group(0).strip()
-        if not line:
-            continue
-        line_norm = normalized_match_text(line)
-        if not line_norm:
-            continue
-        if line_norm == core_norm:
-            level = heading_level(line)
-            if title_level == 99 or level == title_level:
-                return start_pos + m.start()
-
-    for m in re.finditer(r"(?m)^[^\n]+$", search_text):
-        line = m.group(0).strip()
-        if not line:
-            continue
-        line_norm = normalized_match_text(line)
-        if core_norm and core_norm in line_norm:
-            level = heading_level(line)
-            if title_level == 99 or level == title_level:
-                return start_pos + m.start()
-
+    
+    # 去除标题中可能包含的编号（如 "1. ", "1.1 ", "一、" 等）提取核心部分
+    core_title = re.sub(r"^[一二三四五六七八九十\d\.\s、]+", "", search_title).strip()
+    if not core_title:
+        core_title = search_title
+        
+    # 尝试精确匹配带有核心标题的行
+    pattern = re.compile(rf"(?m)^[ \t]*[一二三四五六七八九十\d\.\s、]*{re.escape(core_title)}[ \t]*$")
+    m = pattern.search(search_text)
+    if m:
+        return start_pos + m.start()
+        
+    # 降级：部分匹配
     idx = search_text.find(core_title)
     if idx != -1:
+        # 尝试回退到该行的行首
         last_newline = search_text.rfind('\n', 0, idx)
         return start_pos + (last_newline + 1 if last_newline != -1 else idx)
-
+        
     return -1
 
 def get_format_chapter_info(content_text: str):
     """
-    提取“投标文件格式”或“投标文件相关格式”的章节文本和位置
+    提取“投标文件格式”或“招标文件格式”的章节文本和位置
     返回: (format_chapter_pos, format_chapter_end, chapter_text)
     如果没有找到，返回 (-1, -1, None)
     """
@@ -373,14 +333,13 @@ def get_format_chapter_info(content_text: str):
     format_chapter_pos = -1
     format_chapter_end = len(content_text)
     
-    format_matches = list(re.finditer(r"(?m)^[ \t]*(?:第[一二三四五六七八九十百]+[章部分][ \t]+)?.*(?:投标文件相关格式|投标文件格式|投标文件|格式).*[ \t]*$", content_text))
-    if format_matches:
-        format_chapter_pos = format_matches[-1].start()
+    format_match = re.search(r"(?m)^[ \t]*(?:第[一二三四五六七八九十百]+[章部分][ \t]+)?.*(?:招标|投标)文件.*格式.*[ \t]*$", content_text)
+    if format_match:
+        format_chapter_pos = format_match.start()
     else:
-        fallback_idx = max(
-            content_text.rfind("投标文件格式"),
-            content_text.rfind("投标文件相关格式")
-        )
+        fallback_idx = content_text.find("投标文件格式")
+        if fallback_idx == -1:
+            fallback_idx = content_text.find("招标文件格式")
         if fallback_idx != -1:
             format_chapter_pos = fallback_idx
 
@@ -394,7 +353,7 @@ def get_format_chapter_info(content_text: str):
 
 def generate_format_word_file(project, db: Session):
     """
-    根据项目的招标文档，截取“投标文件格式”或“投标文件相关格式”章节，并生成新的Word文件。
+    根据项目的招标文档，截取“投标文件格式”章节，并生成新的Word文件。
     将新生成的Word文件URL保存到 project.other_urls (以JSON形式)。
     """
     if not project.tender_content:
@@ -585,34 +544,6 @@ def extract_content_for_directories(directories, project):
                         html_format_chapter_end_idx = idx
                         break
 
-    def chapter_level(text_value: str) -> int:
-        t = (text_value or "").strip()
-        if not t:
-            return 99
-        if re.match(r"^\s*第[一二三四五六七八九十百千零〇两\d]+[章部分篇卷][\s、.．:：-]*", t):
-            return 1
-        if re.match(r"^\s*第[一二三四五六七八九十百千零〇两\d]+节[\s、.．:：-]*", t):
-            return 2
-        if re.match(r"^\s*第[一二三四五六七八九十百千零〇两\d]+[条款项][\s、.．:：-]*", t):
-            return 3
-        if re.match(r"^\s*\d+\.\d+\.\d+(?:\.\d+)*[、.．:：-]?\s*", t):
-            return 3
-        if re.match(r"^\s*\d+\.\d+(?:\.\d+)*[、.．:：-]?\s*", t):
-            return 2
-        if re.match(r"^\s*\d+[、.．:：-]\s*", t):
-            return 1
-        if re.match(r"^\s*[一二三四五六七八九十百千零〇两]+[、.．:：-]\s*", t):
-            return 1
-        if re.match(r"^\s*[（(]\d+[）)][、.．:：-]?\s*", t):
-            return 3
-        return 99
-
-    def element_level(el, text_value: str) -> int:
-        tag = (getattr(el, "name", "") or "").lower()
-        if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
-            return int(tag[1])
-        return chapter_level(text_value)
-
     for i, node in enumerate(flat_nodes):
         title = node.get("title", "")
         next_title = None
@@ -626,7 +557,7 @@ def extract_content_for_directories(directories, project):
             
             start_idx = -1
             # 放宽匹配条件，只要包含即可，不再限制长度，因为有些标题会被包裹在很长的格式段落中
-            # 仅在“投标文件格式”或“投标文件相关格式”章节内查找
+            # 仅在“投标文件格式”章节内查找
             for idx in range(html_format_chapter_idx, html_format_chapter_end_idx):
                 el = html_elements[idx]
                 text = el.get_text().strip()
@@ -637,24 +568,11 @@ def extract_content_for_directories(directories, project):
             
             if start_idx != -1:
                 end_idx = html_format_chapter_end_idx
-                start_el_text = html_elements[start_idx].get_text().strip()
-                current_level = element_level(html_elements[start_idx], start_el_text)
                 if core_next_title:
                     for idx in range(start_idx + 1, html_format_chapter_end_idx):
                         text = html_elements[idx].get_text().strip()
                         if core_next_title in text and len(text) < len(core_next_title) + 100:
                             end_idx = idx
-                            break
-                if current_level < 99:
-                    for idx in range(start_idx + 1, html_format_chapter_end_idx):
-                        text = html_elements[idx].get_text().strip()
-                        if not text:
-                            continue
-                        if re.search(r"(\.{3,}|\t)\s*\d+", text):
-                            continue
-                        lvl = element_level(html_elements[idx], text)
-                        if lvl <= current_level and len(text) < 120:
-                            end_idx = min(end_idx, idx)
                             break
                 
                 # 拼接 HTML
@@ -690,28 +608,10 @@ def extract_content_for_directories(directories, project):
                     node["content"] = ""
         else:
             end = format_chapter_end
-            start_line_end = content_text.find('\n', start)
-            if start_line_end == -1:
-                start_line_end = format_chapter_end
-            current_line = content_text[start:start_line_end].strip()
-            current_level = chapter_level(current_line or title)
             if next_title:
                 found = find_title_pos(content_text, next_title, start + len(title), format_chapter_end)
                 if found > start:
                     end = found
-            if current_level < 99:
-                for m in re.finditer(r"(?m)^[^\n]+$", content_text[start_line_end:format_chapter_end]):
-                    line = m.group(0).strip()
-                    if not line:
-                        continue
-                    if re.search(r"(\.{3,}|\t)\s*\d+", line):
-                        continue
-                    lvl = chapter_level(line)
-                    if lvl <= current_level:
-                        candidate = start_line_end + m.start()
-                        if candidate > start:
-                            end = min(end, candidate)
-                            break
             extracted = content_text[start:end].strip("\n")
             if not node.get("content"):
                 node["content"] = extracted
@@ -849,7 +749,7 @@ async def generate_business_directories_stream(project_id: str, current_user: Us
             _, _, chapter_text = get_format_chapter_info(project.tender_content)
             
         if chapter_text:
-            system_prompt = """你是一名专业的标书编写专家。请根据提供的“投标文件格式”或“投标文件相关格式”章节内容，按其原本的目录层次生成一份标准的商务标目录大纲。
+            system_prompt = """你是一名专业的标书编写专家。请根据提供的【投标文件格式】或【招标文件格式】章节内容，按其原本的目录层次生成一份标准的商务标目录大纲。
 请严格输出JSON格式，并且【极其重要】：你必须在每个目录项的 `title` 字段前自动加上规范的章节编号（如：一、 / 1. / 1.1 / (1) 等），绝对不能只输出光秃秃的文本标题！
 格式要求如下：
 [
@@ -1502,33 +1402,6 @@ async def verify_business_bid_stream(project_id: str, current_user: User = Depen
     # 1. 组装待核验的数据
     tender_text = project.tender_content or ""
     directories_text = project.directories_content or ""
-    directories = []
-    if directories_text:
-        try:
-            parsed_directories = json.loads(directories_text)
-            if isinstance(parsed_directories, list):
-                directories = parsed_directories
-        except Exception:
-            directories = []
-
-    flat_nodes = []
-    def flatten_nodes(nodes):
-        if not isinstance(nodes, list):
-            return
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
-            node_id = str(node.get("id", "")).strip()
-            if node_id:
-                flat_nodes.append(node)
-            children = node.get("children")
-            if isinstance(children, list) and children:
-                flatten_nodes(children)
-    flatten_nodes(directories)
-    valid_node_ids = {str(node.get("id", "")).strip() for node in flat_nodes if str(node.get("id", "")).strip()}
-    node_index_text = "\n".join(
-        [f"- node_id={str(node.get('id', '')).strip()} | title={str(node.get('title', '')).strip()}" for node in flat_nodes]
-    )
     
     # 获取公司信息
     company_info = db.query(CompanyInfo).filter(CompanyInfo.user_id == current_user.id).first()
@@ -1541,18 +1414,14 @@ async def verify_business_bid_stream(project_id: str, current_user: User = Depen
 3. 信息精准性：项目名称、招标编号、投标截止时间等核心信息必须100%匹配。
 4. 检查公司名称拼写是否准确（本公司名称：{company_name}）。
 5. 检查金额单位是否统一（例如招标要求“万元”，实际填写“元”需指出）。
-6. 每条核验结果必须准确映射到对应目录节点，严禁默认写入第一个章节。
 
 请流式输出核验结果，每次发现一个问题或提示，就输出一个 JSON 对象。
 必须严格按以下 JSON 格式输出，不要包含 ```json 等任何 Markdown 标记：
-{{"type": "danger|warning|info", "category": "废标风险|盖章签字|信息校验|硬性要求", "message": "具体说明", "matched_text": "原文中的问题片段", "node_id": "必须填写匹配章节的node_id，无法定位时填空字符串"}}
+{{"type": "danger|warning|info", "category": "废标风险|盖章签字|信息校验|硬性要求", "message": "具体说明", "matched_text": "原文中的问题片段", "node_id": "对应目录节点的id（如果能推断出来）"}}
 
 注意：只输出合法的 JSON 对象，每个对象占一行，或者确保它们是独立的结构。为了流式解析方便，请在每个 JSON 对象后加一个换行符 `\\n`。"""
 
     user_prompt = f"""
-【目录节点索引（只能使用以下 node_id）】：
-{node_index_text or "无可用目录节点"}
-
 【招标文件片段（用于提取要求）】：
 {tender_text[:30000]}...
 
@@ -1583,9 +1452,6 @@ async def verify_business_bid_stream(project_id: str, current_user: User = Depen
                                 if line.endswith(','):
                                     line = line[:-1]
                                 parsed = json.loads(line)
-                                node_id = str(parsed.get("node_id", "")).strip() if isinstance(parsed, dict) else ""
-                                if isinstance(parsed, dict):
-                                    parsed["node_id"] = node_id if node_id in valid_node_ids else ""
                                 yield f"data: {json.dumps({'result': parsed}, ensure_ascii=False)}\n\n"
                             except json.JSONDecodeError:
                                 pass
@@ -1598,9 +1464,6 @@ async def verify_business_bid_stream(project_id: str, current_user: User = Depen
                     if line.endswith(','):
                         line = line[:-1]
                     parsed = json.loads(line)
-                    node_id = str(parsed.get("node_id", "")).strip() if isinstance(parsed, dict) else ""
-                    if isinstance(parsed, dict):
-                        parsed["node_id"] = node_id if node_id in valid_node_ids else ""
                     yield f"data: {json.dumps({'result': parsed}, ensure_ascii=False)}\n\n"
                 except json.JSONDecodeError:
                     pass

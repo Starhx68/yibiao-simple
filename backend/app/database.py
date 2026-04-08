@@ -4,7 +4,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 
-DATABASE_URL = os.getenv("DATABASE_URL", "mysql+pymysql://root:root@localhost:3306/hxybs")
+DATABASE_URL = os.getenv("DATABASE_URL", "mysql+pymysql://root:Fog55han!@localhost:3306/hxybs")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=3600)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -86,6 +86,25 @@ def _ensure_schema():
         "business_bid_projects": [
             ("elements_content", "TEXT"),
             ("directories_content", "TEXT"),
+        ],
+        "technical_bid_library": [
+            ("total_pages", "INTEGER DEFAULT 0"),
+            ("summary_chunks", "INTEGER DEFAULT 0"),
+            ("processing_started_at", "DATETIME"),
+            ("processing_completed_at", "DATETIME"),
+            ("processing_duration", "INTEGER"),
+            ("industry_tags", "JSON"),
+            ("project_type_tags", "JSON"),
+        ],
+        "rag_industry_categories": [
+            ("sort_order", "INTEGER DEFAULT 0"),
+            ("enabled", "BOOLEAN DEFAULT TRUE"),
+            ("keywords", "JSON"),
+        ],
+        "rag_project_type_categories": [
+            ("sort_order", "INTEGER DEFAULT 0"),
+            ("enabled", "BOOLEAN DEFAULT TRUE"),
+            ("keywords", "JSON"),
         ],
     }
 

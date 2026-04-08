@@ -1,6 +1,7 @@
 """文件处理服务"""
 import aiofiles
 import os
+import re
 import time
 import gc
 import io
@@ -216,10 +217,16 @@ class FileService:
 
         # 生成带时间戳的文件名，防止重复
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # 精确到毫秒
-        filename = file.filename or "unknown_file"
+        filename = os.path.basename(file.filename or "unknown_file")
+        filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", filename)
+        filename = re.sub(r"\s+", "_", filename).strip("._ ")
+        if not filename:
+            filename = "unknown_file"
 
         # 分离文件名和扩展名
         name, ext = os.path.splitext(filename)
+        if not name:
+            name = "file"
 
         # 生成新的文件名：原文件名_时间戳.扩展名
         new_filename = f"{name}_{timestamp}{ext}"

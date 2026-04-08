@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { marked } from 'marked';
 import '@wangeditor/editor/dist/css/style.css';
 import { Editor, Toolbar } from '@wangeditor/editor-for-react';
@@ -60,33 +60,7 @@ const BusinessContentEdit: React.FC<Props> = ({ projectId }) => {
     }
   };
 
-  useEffect(() => {
-    if (projectId) {
-      fetchDirectories();
-    }
-  }, [projectId]);
-
-  const fetchDirectories = async () => {
-    try {
-      const token = localStorage.getItem('hxybs_token');
-      const res = await fetch(`/api/business-bids/${projectId}/directories`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.directories && data.directories.length > 0) {
-          setOutline(data.directories);
-          buildFullDocument(data.directories);
-        }
-      }
-    } catch (error) {
-      console.error('Failed to fetch directories', error);
-    }
-  };
-
-  const buildFullDocument = async (nodes: OutlineNode[]) => {
+  const buildFullDocument = useCallback(async (nodes: OutlineNode[]) => {
     let html = '';
     const traverse = async (nodeList: OutlineNode[]) => {
       for (const node of nodeList) {
@@ -146,7 +120,32 @@ const BusinessContentEdit: React.FC<Props> = ({ projectId }) => {
     };
     await traverse(nodes);
     setFullHtml(html);
-  };
+  }, []);
+
+  const fetchDirectories = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      const token = localStorage.getItem('hxybs_token');
+      const res = await fetch(`/api/business-bids/${projectId}/directories`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.directories && data.directories.length > 0) {
+          setOutline(data.directories);
+          buildFullDocument(data.directories);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch directories', error);
+    }
+  }, [projectId, buildFullDocument]);
+
+  useEffect(() => {
+    fetchDirectories();
+  }, [fetchDirectories]);
 
   const handleVerify = async () => {
     setVerifying(true);

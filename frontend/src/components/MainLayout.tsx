@@ -54,6 +54,7 @@ const MainLayout: React.FC = () => {
           { label: '人员管理', to: '/resource/personnel' },
           { label: '财务管理', to: '/resource/financial' },
           { label: '业绩管理', to: '/resource/performance' },
+          { label: 'RAG智能参考', to: '/resource/rag' },
         ],
       },
     ];

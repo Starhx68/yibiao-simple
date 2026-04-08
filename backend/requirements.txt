@@ -38,3 +38,8 @@ passlib[bcrypt]==1.7.4
 paddleocr==2.8.1
 --extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cu129/
 paddlepaddle-gpu==3.2.2
+# RAG向量嵌入模型
+sentence-transformers==5.1.2
+FlagEmbedding==1.2.11
+pywin32
+spire.doc

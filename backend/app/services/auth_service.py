@@ -2,11 +2,17 @@
 from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 import os
+
+# 直接使用 bcrypt，避免 passlib 在 Python 3.14 上的兼容性问题
+try:
+    import bcrypt
+    HAS_BCRYPT = True
+except ImportError:
+    HAS_BCRYPT = False
 
 from ..database import get_db
 from ..models.models import User
@@ -15,16 +21,26 @@ SECRET_KEY = os.getenv("SECRET_KEY", "hxybs-secret-key-change-in-production-2024
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    """验证密码，使用 bcrypt"""
+    if HAS_BCRYPT:
+        try:
+            return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+        except Exception as e:
+            print(f"密码验证失败: {e}")
+            return False
+    return False
 
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    """生成密码哈希，使用 bcrypt"""
+    if HAS_BCRYPT:
+        return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    else:
+        raise Exception("bcrypt 模块未安装")
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:

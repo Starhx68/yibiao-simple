@@ -9,6 +9,7 @@ import QualificationManagement from './pages/resource/QualificationManagement';
 import PersonnelManagement from './pages/resource/PersonnelManagement';
 import FinancialInfoManagement from './pages/resource/FinancialInfoManagement';
 import PerformanceManagement from './pages/resource/PerformanceManagement';
+import RagLibraryManagement from './pages/resource/RagLibraryManagement';
 import UserManagement from './pages/UserManagement';
 import BidEditor from './pages/BidEditor';
 import BusinessBidEditor from './pages/business/BusinessBidEditor';
@@ -32,6 +33,7 @@ function App() {
           <Route path="resource/personnel" element={<PersonnelManagement />} />
           <Route path="resource/financial" element={<FinancialInfoManagement />} />
           <Route path="resource/performance" element={<PerformanceManagement />} />
+          <Route path="resource/rag" element={<RagLibraryManagement />} />
           <Route path="users" element={<UserManagement />} />
           <Route path="interfaces" element={<InterfaceManagement />} />
         </Route>
